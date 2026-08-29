@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
+COPY scripts ./scripts
 RUN pip install --no-cache-dir .
 
 # NOTE: containers run as root *inside* the namespace. Under rootless Podman that maps to

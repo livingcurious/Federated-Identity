@@ -251,6 +251,9 @@ curl -s -X POST -H "X-Admin-Token: $ADMIN" $IDP_INTERNAL/admin/clients/sp-a/revo
 # 2. Recover — generate a fresh keypair *in SP-A's own database only* (never touches
 #    idp.db); prints the new PUBLIC half, nothing private ever leaves the SP:
 python scripts/rotate_sp_key.py sp-a > new_key.json
+#    Under containers, run it inside SP-A's own container instead (same script, same
+#    volume, just reached a different way):
+#    docker compose exec sp-a python scripts/rotate_sp_key.py sp-a > new_key.json
 
 # 3. Re-register the new public key with the IdP (also clears the revoked flag):
 curl -s -X POST -H "X-Admin-Token: $ADMIN" -H "Content-Type: application/json" \
@@ -301,6 +304,12 @@ only as an Argon2 hash) — nothing secret is hardcoded or committed.
 
 Re-running the seed is idempotent: it preserves existing users, keys and sessions, so a
 restart keeps you logged in. Delete the files in `data/` to start completely fresh.
+
+Schema changes (a new column added to an existing table) are applied automatically on
+boot via a small best-effort `ALTER TABLE ... ADD COLUMN` shim
+(`common/database.py::_add_missing_columns`) — existing rows get `NULL` for the new
+column rather than the DB needing to be wiped. This is not a general migration system: it
+only adds columns, and existing rows keep `NULL` rather than a real backfilled value.
 
 ---
 

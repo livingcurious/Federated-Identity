@@ -264,6 +264,12 @@ are built from a single `Containerfile`; orchestration is a `compose.yaml`.
 - **Single-use** authorization codes and client-assertion `jti`s; PKCE is mandatory.
 - Access tokens are short-lived; there is no long-lived refresh token in this build
   (the IdP session is the renewal anchor) to keep the revocation story crisp.
+- **No real migration system.** `common/database.py::create_all` creates missing tables
+  and additively patches missing *columns* (`ALTER TABLE ... ADD COLUMN`, always
+  nullable — existing rows get `NULL`), which is enough to survive an added column like
+  `ClientRow.key_revoked` without wiping data. It cannot rename, drop, retype a column,
+  or backfill anything other than `NULL`. A real migration tool (Alembic) is the right
+  answer past this scale.
 
 ---
 
