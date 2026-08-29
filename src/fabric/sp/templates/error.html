@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign-in problem · {{ app.display_name }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>{{ app.display_name }}</h1></div>
+    <p class="sub">Sign-in could not be completed</p>
+    <p class="error">{{ message }}</p>
+    <div class="links"><p><a href="/login">Try again</a> · <a href="/">Back to {{ app.display_name }}</a></p></div>
+  </main>
+</body>
+</html>

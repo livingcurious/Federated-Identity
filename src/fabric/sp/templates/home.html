@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ app.display_name }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>{{ app.display_name }}</h1></div>
+    <p class="sub">A relying application in the Identity Fabric ({{ app.client_id }})</p>
+
+    {% if user %}
+      <p class="who">Welcome back, <b>{{ user.name }}</b>.</p>
+      <a class="btn" href="/profile">View your profile</a>
+      <div class="links">
+        <p class="muted">Already signed in across the fabric — try another app:</p>
+        {% for other in others %}<p>→ <a href="{{ other.base_url }}">{{ other.display_name }}</a></p>{% endfor %}
+        <p><a href="/logout">Sign out</a></p>
+      </div>
+    {% else %}
+      <p class="who">You are not signed in.</p>
+      <a class="btn" href="/login">Sign in with Identity Fabric</a>
+      <div class="links">
+        <p class="muted">One sign-in works across every connected app.</p>
+        {% for other in others %}<p>→ <a href="{{ other.base_url }}">{{ other.display_name }}</a></p>{% endfor %}
+      </div>
+    {% endif %}
+  </main>
+</body>
+</html>

@@ -1,0 +1,118 @@
+# Identity Fabric under container isolation (Podman-native: `podman compose up --build`).
+#
+# Isolation model (Option A — trusted provisioner):
+#   * One-shot `provisioner` seeds all three volumes at bootstrap, then exits. This is the
+#     only component that ever touches more than one volume, and it does so only at deploy
+#     time — not at runtime, not on the network.
+#   * Each server mounts ONLY its own volume, so a compromised SP cannot open the IdP's
+#     (or the sibling SP's) database file — it isn't on any path it can reach.
+#   * Network segmentation: SP-A and SP-B share no network, so there is no route between
+#     them. Each SP can reach the IdP; the IdP can reach each SP (back-channel logout).
+#
+# Requires a hosts entry so the browser resolves the same names the tokens use:
+#   127.0.0.1  idp  sp-a  sp-b
+name: identity-fabric
+
+x-image: &image
+  build:
+    context: .
+    dockerfile: Containerfile
+  image: identity-fabric:latest
+
+x-env: &env
+  FABRIC_IDP_HOST: idp
+  FABRIC_IDP_INTERNAL_HOST: idp-internal
+  FABRIC_SP_A_HOST: sp-a
+  FABRIC_SP_B_HOST: sp-b
+  FABRIC_IDP_PORT: "9400"
+  FABRIC_IDP_INTERNAL_PORT: "9410"
+  FABRIC_SP_A_PORT: "9401"
+  FABRIC_SP_B_PORT: "9402"
+  FABRIC_IDP_DB_FILE: /data/idp/idp.db
+  FABRIC_SP_A_DB_FILE: /data/spa/sp_a.db
+  FABRIC_SP_B_DB_FILE: /data/spb/sp_b.db
+
+services:
+  # Trusted, one-shot bootstrap: the ONLY component with all three volumes.
+  provisioner:
+    <<: *image
+    environment: *env
+    command: ["python", "-m", "fabric.seed"]
+    volumes:
+      - idp-data:/data/idp
+      - spa-data:/data/spa
+      - spb-data:/data/spb
+    restart: "no"
+
+  # Public IdP surface: discovery, JWKS, login UI, /authorize, /logout. Browser-facing,
+  # so this is the one IdP process published to the host.
+  idp:
+    <<: *image
+    environment: *env
+    command: ["uvicorn", "fabric.idp.main:app", "--host", "0.0.0.0", "--port", "9400", "--forwarded-allow-ips", ""]
+    depends_on:
+      provisioner:
+        condition: service_completed_successfully
+    ports:
+      - "9400:9400"
+    volumes:
+      - idp-data:/data/idp
+    networks: [spa-idp, spb-idp]
+
+  # Internal-only IdP surface: /token (server-to-server, SP -> IdP) and /admin/* (the
+  # bootstrap-token-protected containment console). Deliberately has NO `ports:` entry —
+  # it is reachable only from sp-a/sp-b over the compose network (`idp-internal:9410`),
+  # or from the host via `podman compose exec idp-internal curl ...`. A stolen SP
+  # private_key_jwt key or a leaked admin token is only useful to whoever can reach this
+  # listener, and this is the lever that makes that actually true (see DESIGN.md §10).
+  idp-internal:
+    <<: *image
+    environment: *env
+    command: ["uvicorn", "fabric.idp.main:internal_app", "--host", "0.0.0.0", "--port", "9410", "--forwarded-allow-ips", ""]
+    depends_on:
+      provisioner:
+        condition: service_completed_successfully
+    volumes:
+      - idp-data:/data/idp
+    networks: [spa-idp, spb-idp]
+
+  sp-a:
+    <<: *image
+    environment:
+      <<: *env
+      FABRIC_SP_ID: sp-a
+    command: ["uvicorn", "fabric.sp.main:app", "--host", "0.0.0.0", "--port", "9401", "--forwarded-allow-ips", ""]
+    depends_on:
+      provisioner:
+        condition: service_completed_successfully
+    ports:
+      - "9401:9401"
+    volumes:
+      - spa-data:/data/spa
+    networks: [spa-idp]
+
+  sp-b:
+    <<: *image
+    environment:
+      <<: *env
+      FABRIC_SP_ID: sp-b
+    command: ["uvicorn", "fabric.sp.main:app", "--host", "0.0.0.0", "--port", "9402", "--forwarded-allow-ips", ""]
+    depends_on:
+      provisioner:
+        condition: service_completed_successfully
+    ports:
+      - "9402:9402"
+    volumes:
+      - spb-data:/data/spb
+    networks: [spb-idp]
+
+# Two disjoint networks. IdP is on both; each SP on exactly one → SP-A and SP-B
+# have no network path to one another.
+networks:
+  spa-idp:
+  spb-idp:
+
+volumes:
+  idp-data:
+  spa-data:
+  spb-data:

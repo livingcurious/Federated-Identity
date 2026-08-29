@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Identity Fabric</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>Identity Fabric</h1></div>
+
+    {% if user %}
+      <p class="sub">Identity Provider · <strong>{{ issuer }}</strong></p>
+      <p class="who">Signed in as <b>{{ user.name }}</b> ({{ user.email }})</p>
+      <p class="sub">Open a connected application — it will sign you in automatically:</p>
+      <ul class="applist">
+        {% for sp in sps %}
+        <li>→ <a href="{{ sp.base_url }}">{{ sp.display_name }}</a></li>
+        {% endfor %}
+      </ul>
+      <div class="hint"><a class="logout" href="/logout">Sign out everywhere</a></div>
+    {% else %}
+      <p class="sub">Identity Provider · <strong>{{ issuer }}</strong></p>
+      <p class="who">You are not signed in.</p>
+      <p class="sub">Start from a connected application to sign in:</p>
+      <ul class="applist">
+        {% for sp in sps %}
+        <li>→ <a href="{{ sp.base_url }}">{{ sp.display_name }}</a></li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </main>
+</body>
+</html>

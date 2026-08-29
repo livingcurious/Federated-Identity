@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Profile · {{ app.display_name }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>{{ app.display_name }}</h1></div>
+    <p class="sub">Signed in via the Identity Fabric</p>
+
+    <p class="who"><b>{{ user.name }}</b></p>
+    <dl class="claims">
+      <dt>Email</dt><dd>{{ user.email }}</dd>
+      <dt>Subject (sub)</dt><dd>{{ user.sub }}</dd>
+      <dt>Roles</dt>
+      <dd>{% for r in user.roles %}<span class="pill">{{ r }}</span>{% endfor %}</dd>
+      <dt>This SP session</dt><dd>{{ sp_sid }}</dd>
+      <dt>IdP session (sid)</dt><dd>{{ idp_sid }}</dd>
+    </dl>
+
+    <div class="links">
+      {% for other in others %}<p>→ <a href="{{ other.base_url }}">Open {{ other.display_name }}</a> (no new login)</p>{% endfor %}
+      <p><a href="/logout">Sign out everywhere</a></p>
+    </div>
+  </main>
+</body>
+</html>
