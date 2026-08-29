@@ -1,4 +1,6 @@
-# Identity Fabric under container isolation (Podman-native: `podman compose up --build`).
+# Identity Fabric under container isolation. Nothing here is engine-specific — run it
+# with `docker compose up --build`, `podman compose up --build`, or just `./container-start.sh`
+# (picks Docker if available, else installs and uses Podman).
 #
 # Isolation model (Option A — trusted provisioner):
 #   * One-shot `provisioner` seeds all three volumes at bootstrap, then exits. This is the

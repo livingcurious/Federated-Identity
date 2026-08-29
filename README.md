@@ -89,12 +89,26 @@ Stop everything with **Ctrl+C**.
 
 ---
 
-## Run under container isolation (Podman)
+## Run under container isolation (Docker or Podman)
 
 The local run is convenient but has **logical** DB separation only — all three processes
 share a user and a `data/` directory, so a compromised SP could read the others' files.
-The Podman topology turns that into **enforced** isolation and is closer to how you'd
-actually deploy this.
+The container topology (`compose.yaml`) turns that into **enforced** isolation and is
+closer to how you'd actually deploy this. Nothing in `compose.yaml` is Podman-specific,
+so it runs unchanged under either engine.
+
+**One command, either engine:**
+
+```bash
+./container-start.sh          # build + up (foreground logs)
+./container-start.sh -d       # build + up detached
+```
+
+It uses Docker if it's installed and its daemon is reachable; otherwise it installs
+Podman (via Homebrew on macOS, or `apt`/`dnf`/`pacman`/`zypper` on Linux — asking for
+`sudo` where a package manager needs it) and starts a Podman machine if you're on macOS,
+then runs `<engine> compose up --build`. The `/etc/hosts` check below still applies either
+way — the script does it for you and tells you exactly what to add if it's missing.
 
 **Isolation model (trusted provisioner):**
 - A one-shot **provisioner** seeds all three volumes at bootstrap, then exits — it is the
@@ -111,22 +125,26 @@ actually deploy this.
 echo '127.0.0.1  idp  sp-a  sp-b' | sudo tee -a /etc/hosts
 ```
 
-**Start it** (Podman 5+ with a running `podman machine` on macOS):
+**Start it** — `./container-start.sh` (above) handles engine choice + `/etc/hosts` for
+you. If you'd rather drive it directly:
 
 ```bash
-./podman-start.sh          # or: podman compose up --build
+docker compose up --build     # Docker
+podman compose up --build     # Podman 5+, with a running `podman machine` on macOS
+./podman-start.sh             # equivalent to the line above, Podman-only, no engine detection
 ```
 
 Endpoints become http://idp:9400, http://sp-a:9401, http://sp-b:9402 — plus
 `http://idp-internal:9410` (token + admin), which has **no host-published port at all**;
-reach it with `podman compose exec idp-internal curl ...`. The one-time admin token is
+reach it with `<engine> compose exec idp-internal curl ...`. The one-time admin token is
 in the provisioner's logs:
 
 ```bash
-podman compose logs provisioner | grep -A1 'Admin token'
+<engine> compose logs provisioner | grep -A1 'Admin token'
 ```
 
-**See the isolation for yourself:**
+**See the isolation for yourself** (replace `podman` with `docker` if that's your engine
+— the container name prefix is the same either way):
 
 ```bash
 # SP-A can only see its own database
@@ -147,7 +165,7 @@ podman compose exec idp-internal \
 **Stop** (volumes persist so the next `up` keeps your data):
 
 ```bash
-podman compose down
+<engine> compose down
 ```
 
 > Trade-off: containers isolate against ordinary app-level compromise (RCE reading the
@@ -296,8 +314,9 @@ start.sh                  one command: venv + install + run.py
 scripts/demo.py           scripted end-to-end proof
 scripts/rotate_sp_key.py  SP-key-compromise recovery: fresh keypair in that SP's own DB only
 Containerfile             single image for all roles
-compose.yaml              isolated Podman/Docker topology (provisioner + segmented services)
-podman-start.sh           /etc/hosts check + `podman compose up --build`
+compose.yaml              isolated Docker/Podman topology (provisioner + segmented services)
+container-start.sh        one script: Docker if available, else install+use Podman, then compose up
+podman-start.sh           /etc/hosts check + `podman compose up --build` (Podman-only, no detection)
 ```
 
 Two run modes: **local processes** (`start.sh` / `run.py`) for development, and

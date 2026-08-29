@@ -290,9 +290,10 @@ start.sh                  one command: venv + install + run.py
 scripts/demo.py           scripted end-to-end proof (SSO + cross-SP rejection)
 scripts/rotate_sp_key.py  SP-key-compromise recovery (§5.4): fresh keypair, that SP's DB only
 Containerfile             single image for all roles
-compose.yaml              isolated Podman/Docker topology (provisioner + segmented services
+compose.yaml              isolated Docker/Podman topology (provisioner + segmented services
                           + `idp-internal`, which has no published port — see §5.7)
-podman-start.sh           /etc/hosts check + `podman compose up --build`
+container-start.sh        Docker-if-available, else install+use Podman, then compose up --build
+podman-start.sh           /etc/hosts check + `podman compose up --build` (Podman-only)
 ```
 
 ---
