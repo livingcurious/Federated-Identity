@@ -215,6 +215,45 @@ from working *inside* the network it's reachable from, but it does mean that net
 no longer "the whole internet, plus every container" — closing the specific gap where
 container isolation looked like a mutual-auth boundary but wasn't one.
 
+### 5.8 Group-based SP access, and SP-local roles
+
+**The gap this closes:** SSO by itself only answers "is this person authenticated" —
+without this, any authenticated user could reach *any* registered SP, because nothing
+ever checked whether they should be able to. Real IdPs (Okta, Azure AD) treat this as a
+mandatory step ("assignments") when onboarding an app, not an optional extra.
+
+- **`UserRow.groups`** (IdP) — coarse, stable org/team membership (`engineering`,
+  `finance-dept`, `hr-dept`). This is the *only* new thing the IdP holds for this
+  feature; it is never asserted as a token claim.
+- **`ClientRow.authorized_groups`** (IdP) — which groups may SSO into a given client at
+  all. Empty (the default for a newly registered client — see §5.9) denies everyone.
+- **Enforcement**: `idp/api/auth_ui.py::_resume_authorization` — the single function
+  both the fresh-login path (`login()`) and the silent SSO-resume path (`authorize()`
+  with an existing session) call before minting an authorization code. If
+  `user.groups ∩ client.authorized_groups` is empty, no code is minted, no token is ever
+  possible for that pair, and the user gets a 403 — but keeps their IdP-wide SSO cookie,
+  since this is a per-SP authorization decision, not an authentication failure.
+- **Roles moved out of the IdP entirely.** Fine-grained permissions (`admin`, `finance`,
+  `hr`, …) are inherently per-application and proliferate — centralizing them would mean
+  every SP's private role vocabulary living in IdP schema/seed data forever. Each SP now
+  keeps its own `SPUserRoleRow(subject, roles)` table, populated independently: the
+  *same* person can be `admin` at one SP and a plain `user` at another. A first-ever
+  login with no seeded row defaults to `["user"]`.
+- **Admin levers**: `POST /admin/clients/{client_id}/groups/{group}/authorize` and
+  `.../revoke` — same shape as the key-revoke/session-revoke containment levers already
+  in §5.4.
+
+### 5.9 Dynamic client registration
+
+Beyond the two seeded SPs, `POST /admin/clients` registers a new client with
+`public_jwk=None` (a real, nullable "pending" state — `ClientService.authenticate`
+rejects it with a specific error rather than a low-level crypto failure) and
+`authorized_groups=[]`. The existing `register-key` endpoint (§5.4) doubles as the
+"complete registration" step with no changes needed. This mirrors how a real IdP
+onboards an app — create it, get pending credentials, submit the key — as an explicit,
+auditable admin action instead of only the automatic seed-time script (§10.3's "trusted
+provisioner").
+
 ---
 
 ## 6. Token & Claim Shapes
@@ -231,7 +270,11 @@ container isolation looked like a mutual-auth boundary but wasn't one.
 | `jti` | unique token id (revocation granularity) |
 | `nonce` | echoes the SP's nonce (id_token only) |
 | `iat`/`nbf`/`exp` | issuance / not-before / expiry |
-| `email`, `name`, `roles` | seeded profile claims (id_token) |
+| `email`, `name` | seeded profile claims (id_token) |
+
+No `roles` claim — roles are deliberately not an IdP concept at all (see §5.8). `groups`
+is also never a claim: it's an IdP-internal input to the access-gate check in
+§5.8, checked before a token is minted, never asserted to anyone afterward.
 
 ---
 
@@ -269,7 +312,10 @@ are built from a single `Containerfile`; orchestration is a `compose.yaml`.
   nullable — existing rows get `NULL`), which is enough to survive an added column like
   `ClientRow.key_revoked` without wiping data. It cannot rename, drop, retype a column,
   or backfill anything other than `NULL`. A real migration tool (Alembic) is the right
-  answer past this scale.
+  answer past this scale. Concretely: `UserRow.roles` was dropped in favor of `groups`
+  (§5.8) — that's exactly the kind of change this shim can't handle cleanly, so it's
+  treated as breaking: `rm -f data/*.db` (or `docker compose down -v`) before the first
+  boot after that change, same as every other schema-affecting change in this project.
 
 ---
 
@@ -279,17 +325,20 @@ are built from a single `Containerfile`; orchestration is a `compose.yaml`.
 src/fabric/
   common/         config, clock, crypto (Ed25519/JWT/JWKS), domain DTOs, db engine, oauth constants,
                   audit (JSON logs + audit trail + alert sinks)
-  seed.py         provisions all DBs: users, SP registry (+public keys), first signing key, admin token
+  seed.py         provisions all DBs: users (+groups), SP registry (+public keys, authorized_groups,
+                  per-SP local roles), first signing key, admin token
   idp/
     api/          oidc (jwks/discovery — public), token (/token — internal),
-                  auth_ui (home/login/logout — public), admin (+audit view, key/session/client-key
-                  containment — internal)
+                  auth_ui (home/login/logout — public, group-authorization gate — §5.8),
+                  admin (+audit view, key/session/client-key containment, dynamic client
+                  registration + group grants — §5.8/5.9 — internal)
     main.py       `app` (public ASGI app) + `internal_app` (token + admin ASGI app) — see §5.7
-    service/      keys, sessions, clients, users, flows, logout
+    service/      keys, sessions, clients (+ dynamic registration, group grants), users (+ groups), flows, logout
     persistence/  ORM models (+audit_events) + async repositories        →  idp.db
   sp/
-    api/          routes (home/login/callback/profile/logout/backchannel-logout)
-    service/      idp_client (discovery + JWKS cache), login, sessions
+    api/          routes (home/login/callback/profile/logout/backchannel-logout,
+                  admin/finance/hr — role-gated, §5.8)
+    service/      idp_client (discovery + JWKS cache), login, sessions (local role lookup)
     persistence/  ORM models (+audit_events) + async repositories        →  sp_a.db / sp_b.db
 run.py                    seed + launch IdP (public+internal) + SP-A + SP-B (local processes)
 start.sh                  one command: venv + install + run.py

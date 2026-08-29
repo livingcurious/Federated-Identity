@@ -63,3 +63,25 @@ class SPPendingAuthRow(SPBase):
     code_verifier: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class SPUserRoleRow(SPBase):
+    """This SP's own role assignment for a subject — entirely independent of every
+    other SP and of the IdP. The IdP only ever asserts *identity*; each SP decides its
+    own permissions locally, managed here (seeded, and editable via the HR panel)."""
+
+    __tablename__ = "user_roles"
+
+    subject: Mapped[str] = mapped_column(String, primary_key=True)
+    roles: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class BudgetRow(SPBase):
+    """A single fake budget-approval record per quarter, for the Finance panel demo."""
+
+    __tablename__ = "budget"
+
+    quarter: Mapped[str] = mapped_column(String, primary_key=True)
+    approved: Mapped[bool] = mapped_column(Boolean, default=False)
+    approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

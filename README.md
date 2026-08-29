@@ -81,23 +81,75 @@ Stop everything with **Ctrl+C**.
 
 ### Seeded users
 
-| Email | Password | Roles |
+| Email | Password | IdP group |
 |---|---|---|
-| `ada@example.com` | `correct horse battery` | user, engineer |
-| `grace@example.com` | `hopper-admin-2024` | user, admin |
-| `alan@example.com` | `turing-test-pass` | user |
-| `marie@example.com` | `curie-radium-1903` | user |
-| `linus@example.com` | `torvalds-penguin` | user |
+| `ada@example.com` | `correct horse battery` | engineering |
+| `grace@example.com` | `hopper-admin-2024` | engineering |
+| `alan@example.com` | `turing-test-pass` | engineering |
+| `marie@example.com` | `curie-radium-1903` | finance-dept |
+| `linus@example.com` | `torvalds-penguin` | engineering |
+| `diana@example.com` | `diana-hr-secure-1` | hr-dept |
 
-### SP admin panel (role check demo)
+A user's **group** is the only thing the IdP checks to decide whether they may SSO into
+an SP *at all* (see the next section) — it carries no permissions of its own. What a
+signed-in user can actually *do* at a given SP is decided entirely by that SP, locally
+(see "SP-local roles" below).
 
-Each SP has an `/admin` page (session list + a "revoke all sessions at this SP" action).
-The link to it only renders for the `admin` role, but that's cosmetic — `/admin` and
-`POST /admin/revoke-all` independently re-check the role on every request, so reaching
-either URL directly doesn't bypass anything. Sign in as `grace@example.com` (has `admin`)
-to see it; sign in as `marie@example.com` or `linus@example.com` (no `admin`) and the same
-URLs return `403 Forbidden` — both outcomes are logged (`sp.admin.access_denied`,
-`sp.admin.sessions_revoked`).
+### Group-based SP access (who can even sign into which app)
+
+Each SP declares which IdP groups it trusts, via `ClientRow.authorized_groups`: Atlas
+Console (`sp-a`) welcomes `engineering`, `finance-dept`, and `hr-dept`; Borealis Portal
+(`sp-b`) is `engineering`-only. The check lives at the IdP, in
+`idp/api/auth_ui.py::_resume_authorization` — the single function both a fresh login
+and a silent SSO-resume both funnel through — so it's enforced *before* any
+authorization code is ever minted, not after the fact. Sign in as `marie@example.com`
+(finance-dept) at SP-A — works fine — then try SP-B: `403 Forbidden`, no code, no
+token, nothing issued, logged as `client.access.denied`. She still keeps her IdP-wide
+SSO cookie (the gate is a per-SP authorization decision, not an authentication
+failure) — she just can't use *that* app.
+
+Admin can grant/revoke a group's access to any client:
+```bash
+curl -s -X POST -H "X-Admin-Token: $ADMIN" $IDP_INTERNAL/admin/clients/sp-b/groups/finance-dept/authorize
+curl -s -X POST -H "X-Admin-Token: $ADMIN" $IDP_INTERNAL/admin/clients/sp-b/groups/finance-dept/revoke
+```
+
+### SP-local roles (what a signed-in user can do — Admin, Finance, HR)
+
+Roles are **not** an IdP concept at all — the `id_token` carries no `roles` claim. Each
+SP keeps its own role table (`SPUserRoleRow`), seeded independently, so the *same*
+person can hold different roles at different apps: `grace` is `admin` at SP-A but a
+plain `user` at SP-B. A first-ever login at any SP with no seeded row defaults to
+`user`.
+
+Three role-gated panels exist at each SP, all following the same pattern (link hidden
+from other roles in the UI — cosmetic — with the actual role check re-run independently
+on every request, allow and deny both audited):
+
+| Role | Panel | Action |
+|---|---|---|
+| `admin` | `/admin` | session list, "revoke all sessions at this SP" |
+| `finance` | `/finance` | budget status, "approve budget" |
+| `hr` | `/hr` | this SP's local role roster, "assign a role to a subject" |
+
+Try it at SP-A: `grace` sees Admin; `marie` sees Finance (and can approve the quarter's
+budget); `diana` sees HR — and can reassign roles for anyone else at that SP entirely
+locally, with zero IdP involvement (`POST /hr/assign-role`). `ada`/`alan`/`linus` see
+none of the three (plain `user`) until HR grants them one.
+
+### Dynamic client registration (Okta-style app onboarding)
+
+Beyond the two seeded SPs, a new client can be registered at runtime, mirroring how a
+real IdP onboards a new app — create it, get pending credentials, submit the key:
+```bash
+curl -s -X POST -H "X-Admin-Token: $ADMIN" -H "Content-Type: application/json" \
+  -d '{"client_id":"sp-c","display_name":"New App","redirect_uri":"https://new-app/callback","post_logout_redirect_uri":"https://new-app","backchannel_logout_uri":"https://new-app/backchannel-logout"}' \
+  $IDP_INTERNAL/admin/clients
+# -> 201 {"client_id": "sp-c", "status": "pending_key_registration"}
+```
+`/token` rejects it (`"client has not completed key registration"`) until its public key
+is registered — same `register-key` endpoint used for the SP-key-recovery flow below —
+and it denies every group until explicitly authorized, same as above.
 
 ---
 
@@ -275,12 +327,16 @@ Every security-relevant event is emitted three ways at once (see `common/audit.p
 - **Alerts** — `ALERT`-severity events print a loud `[ALERT] …` banner on stderr and go
   to any registered sink (`register_alert_sink` accepts a webhook). High-signal events:
   `assertion.replay.detected`, `client.auth.failed` (failed IdP↔SP mutual auth),
-  `key.revoked`, `session.revoked`, `client.key.revoked`, `sp.admin.sessions_revoked`.
+  `key.revoked`, `session.revoked`, `client.key.revoked`, `client.group.revoked`,
+  `sp.admin.sessions_revoked`.
 
 Routine events (`auth.login.succeeded/failed`, `token.issued/denied`, `sp.login.*`,
-`sp.backchannel.*`, `key.rotated/retired`, `client.key.registered`,
-`sp.admin.access_denied` — a non-admin hitting `/admin`) log at info/notice/warning. Logs
-and alerts fire immediately, independent of the request's DB transaction.
+`sp.backchannel.*`, `key.rotated/retired`, `client.key.registered`, `client.registered`,
+`client.group.authorized`, `sp.finance.budget_approved`, `sp.hr.role_assigned`) log at
+info/notice. `client.access.denied` (a user's group doesn't authorize the SP they tried)
+and `sp.access.denied` (a signed-in user hit an SP panel — admin/finance/hr — they don't
+have the role for) log at warning. Logs and alerts fire immediately, independent of the
+request's DB transaction.
 
 The `source_ip` on every event is the direct TCP peer unless the request came from an IP
 listed in `FABRIC_TRUSTED_PROXY_IPS`, in which case `X-Forwarded-For` is honored instead —
@@ -321,16 +377,17 @@ src/fabric/
                   audit (JSON logs + audit trail + alert sinks)
   seed.py         provisions all DBs: users · SP registry (+public keys) · first signing key · admin token
   idp/
-    api/          oidc (discovery/jwks — public) · token (/token — internal) · auth_ui (home/login/logout)
-                  admin (+ /admin/audit, /admin/clients/*/revoke-key|register-key — internal)
+    api/          oidc (discovery/jwks — public) · token (/token — internal) · auth_ui (home/login/logout,
+                  group-authorization gate in _resume_authorization)
+                  admin (+ /admin/audit, /admin/clients (create/revoke-key/register-key/groups) — internal)
     main.py       two ASGI apps: `app` (public) and `internal_app` (token + admin)
-    service/      keys · sessions · clients · users · flows · logout
+    service/      keys · sessions · clients (incl. dynamic registration + group grants) · users (groups) · flows · logout
     persistence/  ORM models (+ audit_events) + async repositories        →  idp.db
   sp/
     api/          routes (home/login/callback/profile/logout/backchannel-logout,
-                  admin — role-gated: GET /admin, POST /admin/revoke-all)
-    service/      idp_client (discovery + JWKS cache) · login · sessions
-    persistence/  ORM models (+ audit_events) + async repositories        →  sp_a.db · sp_b.db
+                  admin/finance/hr — role-gated via the shared `_require_role` helper)
+    service/      idp_client (discovery + JWKS cache) · login · sessions (local role lookup)
+    persistence/  ORM models (+ audit_events, user_roles, budget) + async repositories  →  sp_a.db · sp_b.db
 run.py                    seed + launch IdP (public+internal) and both SPs (local processes)
 start.sh                  one command: venv + install + run.py
 scripts/demo.py           scripted end-to-end proof

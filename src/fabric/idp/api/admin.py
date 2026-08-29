@@ -134,3 +134,62 @@ async def register_client_key(
     await audit.record(
         Event.CLIENT_KEY_REGISTERED, Severity.NOTICE, actor=_ADMIN_ACTOR, client_id=client_id
     )
+
+
+class CreateClientRequest(BaseModel):
+    client_id: str
+    display_name: str
+    redirect_uri: str
+    post_logout_redirect_uri: str
+    backchannel_logout_uri: str
+
+
+@router.post("/clients", status_code=status.HTTP_201_CREATED)
+async def create_client(
+    session: SessionDep, settings: SettingsDep, audit: AuditDep, body: CreateClientRequest
+) -> dict[str, str]:
+    """Okta-style dynamic registration: create a client with no key yet. It denies every
+    group and rejects /token until an operator authorizes a group and registers a key.
+    """
+    try:
+        await ClientService(session, settings).create_pending(
+            client_id=body.client_id,
+            display_name=body.display_name,
+            redirect_uri=body.redirect_uri,
+            post_logout_redirect_uri=body.post_logout_redirect_uri,
+            backchannel_logout_uri=body.backchannel_logout_uri,
+        )
+    except ServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.description) from exc
+    await audit.record(
+        Event.CLIENT_REGISTERED, Severity.NOTICE, actor=_ADMIN_ACTOR, client_id=body.client_id
+    )
+    return {"client_id": body.client_id, "status": "pending_key_registration"}
+
+
+@router.post("/clients/{client_id}/groups/{group}/authorize", status_code=status.HTTP_204_NO_CONTENT)
+async def authorize_client_group(
+    session: SessionDep, settings: SettingsDep, audit: AuditDep, client_id: str, group: str
+) -> None:
+    try:
+        await ClientService(session, settings).authorize_group(client_id, group)
+    except ServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.description) from exc
+    await audit.record(
+        Event.CLIENT_GROUP_AUTHORIZED, Severity.NOTICE, actor=_ADMIN_ACTOR,
+        client_id=client_id, detail={"group": group},
+    )
+
+
+@router.post("/clients/{client_id}/groups/{group}/revoke", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_client_group(
+    session: SessionDep, settings: SettingsDep, audit: AuditDep, client_id: str, group: str
+) -> None:
+    try:
+        await ClientService(session, settings).revoke_group(client_id, group)
+    except ServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.description) from exc
+    await audit.record(
+        Event.CLIENT_GROUP_REVOKED, Severity.ALERT, actor=_ADMIN_ACTOR,
+        client_id=client_id, detail={"group": group},
+    )

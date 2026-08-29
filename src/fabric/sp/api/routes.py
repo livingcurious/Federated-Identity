@@ -13,10 +13,12 @@ from starlette import status
 
 from fabric.common import crypto
 from fabric.common.audit import Event, Severity
+from fabric.common.clock import utc_now
 from fabric.common.config import Settings, SPClientConfig
 from fabric.common.domain import PublicUser
 from fabric.common.oauth import BACKCHANNEL_LOGOUT_EVENT
 from fabric.sp.deps import AuditDep, IdPClientDep, SessionDep, SettingsDep, sp_cookie_name
+from fabric.sp.persistence.repositories import BudgetRepository, SPUserRoleRepository
 from fabric.sp.service.errors import LoginError
 from fabric.sp.service.idp_client import IdPClient
 from fabric.sp.service.login import LoginService
@@ -26,10 +28,50 @@ router = APIRouter(tags=["sp"])
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
 ADMIN_ROLE = "admin"
+FINANCE_ROLE = "finance"
+HR_ROLE = "hr"
+KNOWN_ROLES = ("user", "admin", "finance", "hr")
+CURRENT_QUARTER = "2026-Q3"
 
 
 def _is_admin(user: PublicUser | None) -> bool:
     return user is not None and ADMIN_ROLE in user.roles
+
+
+async def _require_role(
+    request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep,
+    *, role: str, action_path: str,
+) -> PublicUser | Response:
+    """Load the SP-local session and enforce ``role``. Returns the authenticated user
+    on success, or a ready-to-return ``Response`` (redirect-to-login, or a rendered 403)
+    on failure — callers do ``result = await _require_role(...); if isinstance(result,
+    Response): return result``.
+
+    This, not the conditional link in home/profile templates, is the actual security
+    boundary — it re-runs independently on every request regardless of how the URL was
+    reached, so hiding the link is cosmetic.
+    """
+    sess = await SPSessionService(session, settings).load_valid(
+        request.cookies.get(sp_cookie_name(settings))
+    )
+    if sess is None:
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    user = SPSessionService.to_public_user(sess)
+    if role not in user.roles:
+        await audit.record(
+            Event.SP_ACCESS_DENIED,
+            Severity.WARNING,
+            subject=user.sub,
+            outcome="denied",
+            detail={"path": action_path, "required_role": role, "roles": user.roles},
+        )
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "forbidden.html",
+            {"app": _me(settings), "message": f"This page is restricted to the {role} role."},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    return user
 
 
 def _me(settings: Settings) -> SPClientConfig:
@@ -68,6 +110,8 @@ async def home(request: Request, session: SessionDep, settings: SettingsDep) -> 
         "user": user,
         "others": _others(settings),
         "is_admin": _is_admin(user),
+        "is_finance": user is not None and FINANCE_ROLE in user.roles,
+        "is_hr": user is not None and HR_ROLE in user.roles,
     }
     return _TEMPLATES.TemplateResponse(request, "home.html", context)
 
@@ -145,6 +189,8 @@ async def profile(request: Request, session: SessionDep, settings: SettingsDep) 
         "idp_sid": sess.idp_sid,
         "others": _others(settings),
         "is_admin": _is_admin(user),
+        "is_finance": FINANCE_ROLE in user.roles,
+        "is_hr": HR_ROLE in user.roles,
     }
     return _TEMPLATES.TemplateResponse(request, "profile.html", context)
 
@@ -154,30 +200,13 @@ async def admin_panel(
     request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
 ) -> Response:
     """Admin-only panel. The link is hidden from non-admins in the UI (see home/profile
-    templates), but that's cosmetic — this check is the actual security boundary, and it
-    re-runs on every request regardless of how the URL was reached."""
-    me = _me(settings)
-    sessions = SPSessionService(session, settings)
-    sess = await sessions.load_valid(request.cookies.get(sp_cookie_name(settings)))
-    if sess is None:
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    user = SPSessionService.to_public_user(sess)
-    if not _is_admin(user):
-        await audit.record(
-            Event.SP_ADMIN_ACCESS_DENIED,
-            Severity.WARNING,
-            subject=user.sub,
-            outcome="denied",
-            detail={"path": "/admin", "roles": user.roles},
-        )
-        return _TEMPLATES.TemplateResponse(
-            request,
-            "forbidden.html",
-            {"app": me, "message": "This page is restricted to the admin role."},
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-    active = await sessions.list_active()
-    context: dict[str, Any] = {"app": me, "sessions": active}
+    templates), but that's cosmetic — ``_require_role`` is the actual security boundary,
+    and it re-runs on every request regardless of how the URL was reached."""
+    result = await _require_role(request, session, settings, audit, role=ADMIN_ROLE, action_path="/admin")
+    if isinstance(result, Response):
+        return result
+    active = await SPSessionService(session, settings).list_active()
+    context: dict[str, Any] = {"app": _me(settings), "sessions": active}
     return _TEMPLATES.TemplateResponse(request, "admin.html", context)
 
 
@@ -187,26 +216,13 @@ async def admin_revoke_all(
 ) -> Response:
     """The action half of the admin panel: same role check, enforced independently of
     the GET view above — a POST straight to this URL is checked exactly the same way."""
-    sessions = SPSessionService(session, settings)
-    sess = await sessions.load_valid(request.cookies.get(sp_cookie_name(settings)))
-    if sess is None:
-        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
-    user = SPSessionService.to_public_user(sess)
-    if not _is_admin(user):
-        await audit.record(
-            Event.SP_ADMIN_ACCESS_DENIED,
-            Severity.WARNING,
-            subject=user.sub,
-            outcome="denied",
-            detail={"path": "/admin/revoke-all", "roles": user.roles},
-        )
-        return _TEMPLATES.TemplateResponse(
-            request,
-            "forbidden.html",
-            {"app": _me(settings), "message": "This action is restricted to the admin role."},
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-    revoked = await sessions.revoke_all()
+    result = await _require_role(
+        request, session, settings, audit, role=ADMIN_ROLE, action_path="/admin/revoke-all"
+    )
+    if isinstance(result, Response):
+        return result
+    user = result
+    revoked = await SPSessionService(session, settings).revoke_all()
     await audit.record(
         Event.SP_ADMIN_SESSIONS_REVOKED,
         Severity.ALERT,
@@ -215,6 +231,90 @@ async def admin_revoke_all(
         detail={"count": revoked},
     )
     return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/finance")
+async def finance_panel(
+    request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
+) -> Response:
+    result = await _require_role(
+        request, session, settings, audit, role=FINANCE_ROLE, action_path="/finance"
+    )
+    if isinstance(result, Response):
+        return result
+    budget = await BudgetRepository(session).get_or_create(CURRENT_QUARTER)
+    return _TEMPLATES.TemplateResponse(request, "finance.html", {"app": _me(settings), "budget": budget})
+
+
+@router.post("/finance/approve-budget")
+async def finance_approve_budget(
+    request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
+) -> Response:
+    result = await _require_role(
+        request, session, settings, audit, role=FINANCE_ROLE, action_path="/finance/approve-budget"
+    )
+    if isinstance(result, Response):
+        return result
+    user = result
+    budget = await BudgetRepository(session).get_or_create(CURRENT_QUARTER)
+    budget.approved = True
+    budget.approved_by = user.sub
+    budget.approved_at = utc_now()
+    await audit.record(
+        Event.SP_FINANCE_BUDGET_APPROVED,
+        Severity.NOTICE,
+        subject=user.sub,
+        outcome="approved",
+        detail={"quarter": CURRENT_QUARTER},
+    )
+    return RedirectResponse(url="/finance", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/hr")
+async def hr_panel(
+    request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
+) -> Response:
+    result = await _require_role(request, session, settings, audit, role=HR_ROLE, action_path="/hr")
+    if isinstance(result, Response):
+        return result
+    assignments = await SPUserRoleRepository(session).all()
+    return _TEMPLATES.TemplateResponse(
+        request, "hr.html", {"app": _me(settings), "assignments": assignments, "known_roles": KNOWN_ROLES}
+    )
+
+
+@router.post("/hr/assign-role")
+async def hr_assign_role(
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+    audit: AuditDep,
+    subject: Annotated[str, Form()],
+    role: Annotated[str, Form()],
+) -> Response:
+    result = await _require_role(
+        request, session, settings, audit, role=HR_ROLE, action_path="/hr/assign-role"
+    )
+    if isinstance(result, Response):
+        return result
+    user = result
+    if role not in KNOWN_ROLES:
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "forbidden.html",
+            {"app": _me(settings), "message": f"'{role}' is not a recognized role."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    await SPUserRoleRepository(session).upsert(subject, [role])
+    await audit.record(
+        Event.SP_HR_ROLE_ASSIGNED,
+        Severity.NOTICE,
+        actor=user.sub,
+        subject=subject,
+        outcome="assigned",
+        detail={"role": role},
+    )
+    return RedirectResponse(url="/hr", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/logout")

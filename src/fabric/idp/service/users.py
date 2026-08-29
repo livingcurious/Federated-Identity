@@ -52,7 +52,17 @@ class UserService:
         user = await self._users.get_by_sub(sub)
         if user is None:
             return None
-        return PublicUser(sub=user.sub, email=user.email, name=user.name, roles=list(user.roles))
+        return PublicUser(sub=user.sub, email=user.email, name=user.name)
+
+    async def get_groups(self, sub: str) -> list[str]:
+        """Internal-only IdP authorization data (which SPs this user may SSO into).
+
+        Deliberately never placed on ``PublicUser`` — that DTO rides into id_token/session
+        claims and is shown to SPs; groups are an IdP-internal input to the access-gate
+        decision in ``auth_ui.py::_resume_authorization``, never asserted to anyone.
+        """
+        user = await self._users.get_by_sub(sub)
+        return list(user.groups) if user is not None else []
 
 
 # A precomputed hash of a random value so authentication does constant work even when

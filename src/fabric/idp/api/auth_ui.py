@@ -15,7 +15,7 @@ from fastapi.responses import RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette import status
 
-from fabric.common.audit import Event, Severity
+from fabric.common.audit import AuditLog, Event, Severity
 from fabric.common.config import Settings
 from fabric.idp.api.endpoints import LOGIN_PATH
 from fabric.idp.deps import IDP_SESSION_COOKIE, AuditDep, SessionDep, SettingsDep
@@ -58,13 +58,44 @@ def _validate_authorize_params(params: dict[str, str]) -> None:
 
 
 async def _resume_authorization(
-    *, session: SessionDep, settings: Settings, sess_row: IdPSessionRow, params: dict[str, str]
-) -> RedirectResponse:
-    """Mint an authorization code for a live session and redirect back to the SP."""
+    *,
+    request: Request,
+    session: SessionDep,
+    settings: Settings,
+    audit: AuditLog,
+    sess_row: IdPSessionRow,
+    params: dict[str, str],
+) -> Response:
+    """Mint an authorization code for a live session and redirect back to the SP —
+    or, if the user isn't authorized for this client at all, a 403.
+
+    The single choke point for both the fresh-login path (``login()``) and the silent
+    SSO-resume path (``authorize()``), so the group-authorization gate below covers both.
+    """
     clients = ClientService(session, settings)
     client = await clients.get(params["client_id"])
     if params["redirect_uri"] != client.redirect_uri:
         raise InvalidRequestError("redirect_uri does not match the registered value")
+
+    user_groups = await UserService(session).get_groups(sess_row.subject)
+    if not (set(user_groups) & set(client.authorized_groups)):
+        await audit.record(
+            Event.CLIENT_ACCESS_DENIED,
+            Severity.WARNING,
+            subject=sess_row.subject,
+            client_id=client.client_id,
+            outcome="denied",
+            detail={"user_groups": user_groups, "authorized_groups": client.authorized_groups},
+        )
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "forbidden.html",
+            {
+                "client_name": client.display_name,
+                "message": "Your account is not authorized for this application.",
+            },
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
 
     flow = OIDCFlowService(session, settings)
     code = await flow.issue_authorization_code(
@@ -98,6 +129,7 @@ async def authorize(
     request: Request,
     session: SessionDep,
     settings: SettingsDep,
+    audit: AuditDep,
     response_type: str,
     client_id: str,
     redirect_uri: str,
@@ -129,7 +161,8 @@ async def authorize(
     sess = await SessionService(session, settings).load_valid(request.cookies.get(IDP_SESSION_COOKIE))
     if sess is not None:
         return await _resume_authorization(
-            session=session, settings=settings, sess_row=sess, params=params
+            request=request, session=session, settings=settings, audit=audit,
+            sess_row=sess, params=params,
         )
 
     return _TEMPLATES.TemplateResponse(
@@ -202,8 +235,12 @@ async def login(
         detail={"sid": sess.sid},
     )
     response = await _resume_authorization(
-        session=session, settings=settings, sess_row=sess, params=params
+        request=request, session=session, settings=settings, audit=audit,
+        sess_row=sess, params=params,
     )
+    # Unconditional even on a 403: the user *did* authenticate successfully — the group
+    # gate is an authorization decision about *this* SP, not an authentication failure —
+    # so they still get their IdP-wide SSO cookie to reach apps they ARE authorized for.
     _set_session_cookie(response, sess.sid, settings)
     return response
 

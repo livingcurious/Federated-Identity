@@ -28,17 +28,36 @@ from fabric.idp.persistence.repositories import (
 from fabric.idp.service.keys import KeyService
 from fabric.idp.service.users import hash_password
 from fabric.sp.persistence.models import SPBase, SPClientKeyRow
-from fabric.sp.persistence.repositories import ClientKeyRepository
+from fabric.sp.persistence.repositories import ClientKeyRepository, SPUserRoleRepository
 
-# (sub, email, password, name, roles) — demo identities only.
+# (sub, email, password, name, groups) — demo identities only. Groups are the IdP-level
+# authorization input for "may this user SSO into this SP at all" (see
+# ClientRow.authorized_groups / _DEFAULT_AUTHORIZED_GROUPS below) — NOT permissions.
+# Permissions are entirely SP-local (see _SEED_LOCAL_ROLES).
 _SEED_USERS: tuple[tuple[str, str, str, str, list[str]], ...] = (
-    ("user-ada", "ada@example.com", "correct horse battery", "Ada Lovelace", ["user", "engineer"]),
-    ("user-grace", "grace@example.com", "hopper-admin-2024", "Grace Hopper", ["user", "admin"]),
-    ("user-alan", "alan@example.com", "turing-test-pass", "Alan Turing", ["user"]),
-    # Non-admin — used to demonstrate the SP admin panel correctly denying access.
-    ("user-marie", "marie@example.com", "curie-radium-1903", "Marie Curie", ["user"]),
-    ("user-linus", "linus@example.com", "torvalds-penguin", "Linus Torvalds", ["user"]),
+    ("user-ada", "ada@example.com", "correct horse battery", "Ada Lovelace", ["engineering"]),
+    ("user-grace", "grace@example.com", "hopper-admin-2024", "Grace Hopper", ["engineering"]),
+    ("user-alan", "alan@example.com", "turing-test-pass", "Alan Turing", ["engineering"]),
+    ("user-marie", "marie@example.com", "curie-radium-1903", "Marie Curie", ["finance-dept"]),
+    ("user-linus", "linus@example.com", "torvalds-penguin", "Linus Torvalds", ["engineering"]),
+    ("user-diana", "diana@example.com", "diana-hr-secure-1", "Diana Prince", ["hr-dept"]),
 )
+
+# Which groups may SSO into each SP at all (empty/omitted client_id = nobody).
+# sp-a (Atlas Console) welcomes everyone; sp-b (Borealis Portal) is engineering-only —
+# so marie (finance-dept) and diana (hr-dept) can reach sp-a but are denied sp-b entirely.
+_DEFAULT_AUTHORIZED_GROUPS: dict[str, list[str]] = {
+    "sp-a": ["engineering", "finance-dept", "hr-dept"],
+    "sp-b": ["engineering"],
+}
+
+# Per-SP local role seed — independent per SP, deliberately different for grace
+# (admin at sp-a, plain user at sp-b) to demonstrate role decoupling concretely.
+# ada/alan/linus get no row anywhere: they pick up the ["user"] first-login default.
+_SEED_LOCAL_ROLES: dict[str, dict[str, list[str]]] = {
+    "sp-a": {"user-grace": ["admin"], "user-marie": ["finance"], "user-diana": ["hr"]},
+    "sp-b": {"user-grace": ["user"]},
+}
 
 
 async def _seed_admin(session: AsyncSession) -> str | None:
@@ -55,14 +74,14 @@ async def _seed_users(session: AsyncSession) -> list[str]:
     if await users.count() > 0:
         return []
     created: list[str] = []
-    for sub, email, password, name, roles in _SEED_USERS:
+    for sub, email, password, name, groups in _SEED_USERS:
         await users.add(
             UserRow(
                 sub=sub,
                 email=email,
                 name=name,
                 password_hash=hash_password(password),
-                roles=roles,
+                groups=groups,
             )
         )
         created.append(f"{email} / {password}")
@@ -103,8 +122,19 @@ async def _seed_sp_pair(
             post_logout_redirect_uri=cfg.post_logout_redirect_uri,
             backchannel_logout_uri=cfg.backchannel_logout_uri,
             public_jwk=public,
+            authorized_groups=_DEFAULT_AUTHORIZED_GROUPS.get(client_id, []),
         )
     )
+
+
+async def _seed_local_roles(sp_session: AsyncSession, client_id: str) -> None:
+    """Seed this SP's own role table, once. Idempotent by checking for ANY existing
+    assignment (not per-subject), so it never overwrites an HR-panel edit on restart."""
+    roles_repo = SPUserRoleRepository(sp_session)
+    if await roles_repo.all():
+        return
+    for subject, roles in _SEED_LOCAL_ROLES.get(client_id, {}).items():
+        await roles_repo.upsert(subject, roles)
 
 
 async def seed_all() -> None:
@@ -130,6 +160,7 @@ async def seed_all() -> None:
                 sp_maker = make_sessionmaker(sp_engines[client_id])
                 async with sp_maker() as sp_session:
                     await _seed_sp_pair(idp_session, sp_session, settings, client_id)
+                    await _seed_local_roles(sp_session, client_id)
                     await sp_session.commit()
             await idp_session.commit()
     finally:

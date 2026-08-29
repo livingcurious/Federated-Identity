@@ -84,6 +84,9 @@ class ClientRepository:
         existing.post_logout_redirect_uri = client.post_logout_redirect_uri
         existing.backchannel_logout_uri = client.backchannel_logout_uri
         existing.public_jwk = client.public_jwk
+        # Deliberately NOT refreshed on an existing row: key_revoked and
+        # authorized_groups are admin-managed containment/authorization state, not
+        # config. A reseed/restart must never silently undo a revoke or a group grant.
 
 
 class SigningKeyRepository:

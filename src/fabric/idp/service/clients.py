@@ -52,6 +52,8 @@ class ClientService:
             raise InvalidClientError("unsupported client_assertion_type")
 
         client = await self.get(client_id)
+        if not client.public_jwk:
+            raise InvalidClientError("client has not completed key registration")
         if client.key_revoked:
             if audit is not None:
                 await audit.record(
@@ -138,3 +140,44 @@ class ClientService:
         client = await self.get(client_id)
         client.public_jwk = public_jwk
         client.key_revoked = False
+
+    # ------------------------- dynamic registration ------------------------------ #
+    async def create_pending(
+        self,
+        *,
+        client_id: str,
+        display_name: str,
+        redirect_uri: str,
+        post_logout_redirect_uri: str,
+        backchannel_logout_uri: str,
+    ) -> None:
+        """Register a new client with no key yet (Okta-style "create app, get pending
+        credentials, submit key later"). Denies every group until explicitly authorized
+        (see ``authorize_group``) and rejects `/token` until a key is registered.
+        """
+        if await self._clients.get(client_id) is not None:
+            raise InvalidRequestError(f"client_id already registered: {client_id}")
+        await self._clients.upsert(
+            ClientRow(
+                client_id=client_id,
+                display_name=display_name,
+                redirect_uri=redirect_uri,
+                post_logout_redirect_uri=post_logout_redirect_uri,
+                backchannel_logout_uri=backchannel_logout_uri,
+                public_jwk=None,
+                key_revoked=False,
+                authorized_groups=[],
+            )
+        )
+
+    # ------------------------------ group authorization -------------------------- #
+    async def authorize_group(self, client_id: str, group: str) -> None:
+        """Allow members of ``group`` to SSO into ``client_id``."""
+        client = await self.get(client_id)
+        if group not in client.authorized_groups:
+            client.authorized_groups = [*client.authorized_groups, group]
+
+    async def revoke_group(self, client_id: str, group: str) -> None:
+        """Stop members of ``group`` from SSO-ing into ``client_id``."""
+        client = await self.get(client_id)
+        client.authorized_groups = [g for g in client.authorized_groups if g != group]

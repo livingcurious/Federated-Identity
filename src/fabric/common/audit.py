@@ -51,6 +51,10 @@ class Event:
     SESSION_REVOKED = "session.revoked"
     CLIENT_KEY_REVOKED = "client.key.revoked"
     CLIENT_KEY_REGISTERED = "client.key.registered"
+    CLIENT_ACCESS_DENIED = "client.access.denied"
+    CLIENT_REGISTERED = "client.registered"
+    CLIENT_GROUP_AUTHORIZED = "client.group.authorized"
+    CLIENT_GROUP_REVOKED = "client.group.revoked"
     BACKCHANNEL_SENT = "logout.backchannel.sent"
     # SP
     SP_LOGIN_SUCCEEDED = "sp.login.succeeded"
@@ -58,8 +62,10 @@ class Event:
     SP_JWKS_REFRESHED = "sp.jwks.refreshed"
     SP_BACKCHANNEL_RECEIVED = "sp.backchannel.received"
     SP_BACKCHANNEL_REJECTED = "sp.backchannel.rejected"
-    SP_ADMIN_ACCESS_DENIED = "sp.admin.access_denied"
+    SP_ACCESS_DENIED = "sp.access.denied"
     SP_ADMIN_SESSIONS_REVOKED = "sp.admin.sessions_revoked"
+    SP_FINANCE_BUDGET_APPROVED = "sp.finance.budget_approved"
+    SP_HR_ROLE_ASSIGNED = "sp.hr.role_assigned"
 
 
 # --------------------------------------------------------------------------- #

@@ -39,7 +39,10 @@ class UserRow(IdPBase):
     email: Mapped[str] = mapped_column(String, unique=True, index=True)
     name: Mapped[str] = mapped_column(String)
     password_hash: Mapped[str] = mapped_column(String)
-    roles: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Coarse org/team membership — the *only* thing the IdP uses to decide whether a
+    # user may SSO into a given SP at all (see ClientRow.authorized_groups). Deliberately
+    # not "roles": fine-grained, per-application permissions belong to each SP, not here.
+    groups: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
 class SigningKeyRow(IdPBase):
@@ -64,10 +67,16 @@ class ClientRow(IdPBase):
     redirect_uri: Mapped[str] = mapped_column(String)
     post_logout_redirect_uri: Mapped[str] = mapped_column(String)
     backchannel_logout_uri: Mapped[str] = mapped_column(String)
-    public_jwk: Mapped[dict[str, Any]] = mapped_column(JSON)
+    # None means "registered, key not submitted yet" — see ClientService.create_pending
+    # and the /admin/clients + register-key admin flow (dynamic client registration).
+    public_jwk: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True, default=None)
     # Emergency containment lever: set True to instantly stop a leaked SP private key from
     # authenticating (private_key_jwt), independent of whether the signature would verify.
     key_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Which IdP-level groups may SSO into this client at all — checked in
+    # auth_ui.py::_resume_authorization. Empty (the default) denies everyone: a newly
+    # created client must be explicitly authorized for at least one group.
+    authorized_groups: Mapped[list[str]] = mapped_column(JSON, default=list)
 
 
 class IdPSessionRow(IdPBase):

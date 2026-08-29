@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Finance · {{ app.display_name }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>{{ app.display_name }}</h1></div>
+    <p class="sub">Finance panel — visible and reachable only to the
+      <code>finance</code> role.</p>
+
+    <h2>Budget — {{ budget.quarter }}</h2>
+    <dl class="claims">
+      <dt>Status</dt>
+      <dd>
+        {% if budget.approved %}
+        <span class="pill">approved</span> by <code>{{ budget.approved_by }}</code> at {{ budget.approved_at }}
+        {% else %}
+        <span class="pill">pending</span>
+        {% endif %}
+      </dd>
+    </dl>
+
+    <form method="post" action="/finance/approve-budget">
+      <button type="submit">Approve {{ budget.quarter }} budget</button>
+    </form>
+
+    <div class="links"><p><a href="/profile">Back to profile</a></p></div>
+  </main>
+</body>
+</html>

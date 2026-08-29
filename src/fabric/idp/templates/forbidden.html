@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forbidden · Identity Fabric</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>Identity Fabric</h1></div>
+    <p class="sub">403 — Forbidden</p>
+    <p class="error">{{ message }}</p>
+    {% if client_name %}<p class="who">Requested application: <b>{{ client_name }}</b></p>{% endif %}
+    <div class="links"><p><a href="/">Home</a></p></div>
+  </main>
+</body>
+</html>

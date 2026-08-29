@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HR · {{ app.display_name }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>{{ app.display_name }}</h1></div>
+    <p class="sub">HR panel — visible and reachable only to the <code>hr</code> role.
+      Roles here are entirely local to this SP — the IdP has no idea they exist.</p>
+
+    <h2>Local role assignments ({{ assignments|length }})</h2>
+    <dl class="claims">
+      {% for a in assignments %}
+      <dt>{{ a.subject }}</dt>
+      <dd>{% for r in a.roles %}<span class="pill">{{ r }}</span>{% endfor %}</dd>
+      {% else %}
+      <dd>No assignments yet.</dd>
+      {% endfor %}
+    </dl>
+
+    <form method="post" action="/hr/assign-role">
+      <label for="subject">Subject</label>
+      <input id="subject" name="subject" type="text" required placeholder="user-alan" />
+
+      <label for="role">Role</label>
+      <select id="role" name="role">
+        {% for r in known_roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+      </select>
+
+      <button type="submit">Assign role</button>
+    </form>
+
+    <div class="links"><p><a href="/profile">Back to profile</a></p></div>
+  </main>
+</body>
+</html>

@@ -12,23 +12,35 @@ from fabric.common.clock import is_expired, utc_in, utc_now
 from fabric.common.config import Settings
 from fabric.common.domain import PublicUser
 from fabric.sp.persistence.models import SPSessionRow
-from fabric.sp.persistence.repositories import SPSessionRepository
+from fabric.sp.persistence.repositories import SPSessionRepository, SPUserRoleRepository
 
 
 class SPSessionService:
     def __init__(self, session: AsyncSession, settings: Settings) -> None:
         self._repo = SPSessionRepository(session)
+        self._roles = SPUserRoleRepository(session)
         self._settings = settings
 
     async def create_from_claims(self, claims: dict[str, Any]) -> SPSessionRow:
+        subject = str(claims["sub"])
+        # Roles are entirely local to this SP — never asserted by the IdP (see
+        # DESIGN.md's role-decoupling rationale). First-ever login here gets the
+        # default role, written through so the HR panel's roster is always complete.
+        role_row = await self._roles.get(subject)
+        if role_row is not None:
+            roles = list(role_row.roles)
+        else:
+            roles = ["user"]
+            await self._roles.upsert(subject, roles)
+
         now = utc_now()
         row = SPSessionRow(
             sid=crypto.new_opaque("spsid_"),
-            subject=str(claims["sub"]),
+            subject=subject,
             idp_sid=str(claims.get("sid", "")),
             email=str(claims.get("email", "")),
             name=str(claims.get("name", "")),
-            roles=list(claims.get("roles", [])),
+            roles=roles,
             created_at=now,
             last_seen_at=now,
             idle_expiry=utc_in(self._settings.sp_session_idle_seconds),

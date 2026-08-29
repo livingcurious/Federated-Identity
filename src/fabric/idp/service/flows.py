@@ -111,7 +111,6 @@ class OIDCFlowService:
             nonce=row.nonce,
             email=profile.email,
             name=profile.name,
-            roles=profile.roles,
         )
         access_claims = self._access_token_claims(
             subject=row.subject, client_id=client.client_id, sid=row.sid
@@ -163,7 +162,6 @@ class OIDCFlowService:
         nonce: str,
         email: str,
         name: str,
-        roles: list[str],
     ) -> dict[str, Any]:
         claims = self._common_claims(
             subject=subject,
@@ -171,7 +169,7 @@ class OIDCFlowService:
             sid=sid,
             ttl=self._settings.id_token_ttl_seconds,
         )
-        claims.update({"nonce": nonce, "email": email, "name": name, "roles": roles})
+        claims.update({"nonce": nonce, "email": email, "name": name})
         return claims
 
     def _access_token_claims(self, *, subject: str, client_id: str, sid: str) -> dict[str, Any]:
