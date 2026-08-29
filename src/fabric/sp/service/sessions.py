@@ -58,6 +58,12 @@ class SPSessionService:
     async def revoke_by_idp_sid(self, idp_sid: str) -> int:
         return await self._repo.revoke_by_idp_sid(idp_sid)
 
+    async def list_active(self) -> list[SPSessionRow]:
+        return await self._repo.all_active()
+
+    async def revoke_all(self) -> int:
+        return await self._repo.revoke_all_active()
+
     @staticmethod
     def to_public_user(row: SPSessionRow) -> PublicUser:
         return PublicUser(sub=row.subject, email=row.email, name=row.name, roles=list(row.roles))

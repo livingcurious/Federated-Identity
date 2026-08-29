@@ -14,6 +14,7 @@ from starlette import status
 from fabric.common import crypto
 from fabric.common.audit import Event, Severity
 from fabric.common.config import Settings, SPClientConfig
+from fabric.common.domain import PublicUser
 from fabric.common.oauth import BACKCHANNEL_LOGOUT_EVENT
 from fabric.sp.deps import AuditDep, IdPClientDep, SessionDep, SettingsDep, sp_cookie_name
 from fabric.sp.service.errors import LoginError
@@ -23,6 +24,12 @@ from fabric.sp.service.sessions import SPSessionService
 
 router = APIRouter(tags=["sp"])
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
+
+ADMIN_ROLE = "admin"
+
+
+def _is_admin(user: PublicUser | None) -> bool:
+    return user is not None and ADMIN_ROLE in user.roles
 
 
 def _me(settings: Settings) -> SPClientConfig:
@@ -56,7 +63,12 @@ async def home(request: Request, session: SessionDep, settings: SettingsDep) -> 
         request.cookies.get(sp_cookie_name(settings))
     )
     user = SPSessionService.to_public_user(sess) if sess is not None else None
-    context: dict[str, Any] = {"app": me, "user": user, "others": _others(settings)}
+    context: dict[str, Any] = {
+        "app": me,
+        "user": user,
+        "others": _others(settings),
+        "is_admin": _is_admin(user),
+    }
     return _TEMPLATES.TemplateResponse(request, "home.html", context)
 
 
@@ -125,14 +137,84 @@ async def profile(request: Request, session: SessionDep, settings: SettingsDep) 
     )
     if sess is None:
         return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    user = SPSessionService.to_public_user(sess)
     context: dict[str, Any] = {
         "app": me,
-        "user": SPSessionService.to_public_user(sess),
+        "user": user,
         "sp_sid": sess.sid,
         "idp_sid": sess.idp_sid,
         "others": _others(settings),
+        "is_admin": _is_admin(user),
     }
     return _TEMPLATES.TemplateResponse(request, "profile.html", context)
+
+
+@router.get("/admin")
+async def admin_panel(
+    request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
+) -> Response:
+    """Admin-only panel. The link is hidden from non-admins in the UI (see home/profile
+    templates), but that's cosmetic — this check is the actual security boundary, and it
+    re-runs on every request regardless of how the URL was reached."""
+    me = _me(settings)
+    sessions = SPSessionService(session, settings)
+    sess = await sessions.load_valid(request.cookies.get(sp_cookie_name(settings)))
+    if sess is None:
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    user = SPSessionService.to_public_user(sess)
+    if not _is_admin(user):
+        await audit.record(
+            Event.SP_ADMIN_ACCESS_DENIED,
+            Severity.WARNING,
+            subject=user.sub,
+            outcome="denied",
+            detail={"path": "/admin", "roles": user.roles},
+        )
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "forbidden.html",
+            {"app": me, "message": "This page is restricted to the admin role."},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    active = await sessions.list_active()
+    context: dict[str, Any] = {"app": me, "sessions": active}
+    return _TEMPLATES.TemplateResponse(request, "admin.html", context)
+
+
+@router.post("/admin/revoke-all")
+async def admin_revoke_all(
+    request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
+) -> Response:
+    """The action half of the admin panel: same role check, enforced independently of
+    the GET view above — a POST straight to this URL is checked exactly the same way."""
+    sessions = SPSessionService(session, settings)
+    sess = await sessions.load_valid(request.cookies.get(sp_cookie_name(settings)))
+    if sess is None:
+        return RedirectResponse(url="/login", status_code=status.HTTP_302_FOUND)
+    user = SPSessionService.to_public_user(sess)
+    if not _is_admin(user):
+        await audit.record(
+            Event.SP_ADMIN_ACCESS_DENIED,
+            Severity.WARNING,
+            subject=user.sub,
+            outcome="denied",
+            detail={"path": "/admin/revoke-all", "roles": user.roles},
+        )
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "forbidden.html",
+            {"app": _me(settings), "message": "This action is restricted to the admin role."},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    revoked = await sessions.revoke_all()
+    await audit.record(
+        Event.SP_ADMIN_SESSIONS_REVOKED,
+        Severity.ALERT,
+        subject=user.sub,
+        outcome="revoked",
+        detail={"count": revoked},
+    )
+    return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/logout")

@@ -23,6 +23,7 @@
 
     <div class="links">
       {% for other in others %}<p>→ <a href="{{ other.base_url }}">Open {{ other.display_name }}</a> (no new login)</p>{% endfor %}
+      {% if is_admin %}<p>→ <a href="/admin">Admin panel</a></p>{% endif %}
       <p><a href="/logout">Sign out everywhere</a></p>
     </div>
   </main>

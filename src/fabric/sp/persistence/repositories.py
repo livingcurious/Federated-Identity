@@ -37,6 +37,21 @@ class SPSessionRepository:
     async def get(self, sid: str) -> SPSessionRow | None:
         return await self._s.get(SPSessionRow, sid)
 
+    async def all_active(self) -> list[SPSessionRow]:
+        result = await self._s.execute(
+            select(SPSessionRow).where(SPSessionRow.revoked.is_(False))
+        )
+        return list(result.scalars().all())
+
+    async def revoke_all_active(self) -> int:
+        result = await self._s.execute(
+            select(SPSessionRow).where(SPSessionRow.revoked.is_(False))
+        )
+        rows = list(result.scalars().all())
+        for row in rows:
+            row.revoked = True
+        return len(rows)
+
     async def revoke_by_idp_sid(self, idp_sid: str) -> int:
         """Kill every local session tied to an IdP session (back-channel logout)."""
         result = await self._s.execute(

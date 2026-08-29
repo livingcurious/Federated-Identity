@@ -58,6 +58,8 @@ class Event:
     SP_JWKS_REFRESHED = "sp.jwks.refreshed"
     SP_BACKCHANNEL_RECEIVED = "sp.backchannel.received"
     SP_BACKCHANNEL_REJECTED = "sp.backchannel.rejected"
+    SP_ADMIN_ACCESS_DENIED = "sp.admin.access_denied"
+    SP_ADMIN_SESSIONS_REVOKED = "sp.admin.sessions_revoked"
 
 
 # --------------------------------------------------------------------------- #

@@ -86,6 +86,18 @@ Stop everything with **Ctrl+C**.
 | `ada@example.com` | `correct horse battery` | user, engineer |
 | `grace@example.com` | `hopper-admin-2024` | user, admin |
 | `alan@example.com` | `turing-test-pass` | user |
+| `marie@example.com` | `curie-radium-1903` | user |
+| `linus@example.com` | `torvalds-penguin` | user |
+
+### SP admin panel (role check demo)
+
+Each SP has an `/admin` page (session list + a "revoke all sessions at this SP" action).
+The link to it only renders for the `admin` role, but that's cosmetic — `/admin` and
+`POST /admin/revoke-all` independently re-check the role on every request, so reaching
+either URL directly doesn't bypass anything. Sign in as `grace@example.com` (has `admin`)
+to see it; sign in as `marie@example.com` or `linus@example.com` (no `admin`) and the same
+URLs return `403 Forbidden` — both outcomes are logged (`sp.admin.access_denied`,
+`sp.admin.sessions_revoked`).
 
 ---
 
@@ -260,12 +272,12 @@ Every security-relevant event is emitted three ways at once (see `common/audit.p
 - **Alerts** — `ALERT`-severity events print a loud `[ALERT] …` banner on stderr and go
   to any registered sink (`register_alert_sink` accepts a webhook). High-signal events:
   `assertion.replay.detected`, `client.auth.failed` (failed IdP↔SP mutual auth),
-  `key.revoked`, `session.revoked`, `client.key.revoked`.
+  `key.revoked`, `session.revoked`, `client.key.revoked`, `sp.admin.sessions_revoked`.
 
 Routine events (`auth.login.succeeded/failed`, `token.issued/denied`, `sp.login.*`,
-`sp.backchannel.*`, `key.rotated/retired`, `client.key.registered`) log at
-info/notice/warning. Logs and alerts fire immediately, independent of the request's DB
-transaction.
+`sp.backchannel.*`, `key.rotated/retired`, `client.key.registered`,
+`sp.admin.access_denied` — a non-admin hitting `/admin`) log at info/notice/warning. Logs
+and alerts fire immediately, independent of the request's DB transaction.
 
 The `source_ip` on every event is the direct TCP peer unless the request came from an IP
 listed in `FABRIC_TRUSTED_PROXY_IPS`, in which case `X-Forwarded-For` is honored instead —
@@ -306,7 +318,8 @@ src/fabric/
     service/      keys · sessions · clients · users · flows · logout
     persistence/  ORM models (+ audit_events) + async repositories        →  idp.db
   sp/
-    api/          routes (home/login/callback/profile/logout/backchannel-logout)
+    api/          routes (home/login/callback/profile/logout/backchannel-logout,
+                  admin — role-gated: GET /admin, POST /admin/revoke-all)
     service/      idp_client (discovery + JWKS cache) · login · sessions
     persistence/  ORM models (+ audit_events) + async repositories        →  sp_a.db · sp_b.db
 run.py                    seed + launch IdP (public+internal) and both SPs (local processes)

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin · {{ app.display_name }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>{{ app.display_name }}</h1></div>
+    <p class="sub">Admin panel — the link to this page is only shown to the
+      <code>admin</code> role, and the route itself re-checks that role on every
+      request, so linking here directly doesn't skip the check.</p>
+
+    <h2>Active local sessions at this SP ({{ sessions|length }})</h2>
+    <dl class="claims">
+      {% for s in sessions %}
+      <dt>{{ s.email }}</dt>
+      <dd>
+        {% for r in s.roles %}<span class="pill">{{ r }}</span>{% endfor %}
+        · sid <code>{{ s.sid }}</code> · idp sid <code>{{ s.idp_sid }}</code>
+        · created {{ s.created_at }}
+      </dd>
+      {% else %}
+      <dd>No active sessions.</dd>
+      {% endfor %}
+    </dl>
+
+    <form method="post" action="/admin/revoke-all">
+      <button type="submit">Revoke all sessions at this SP</button>
+    </form>
+
+    <div class="links"><p><a href="/profile">Back to profile</a></p></div>
+  </main>
+</body>
+</html>

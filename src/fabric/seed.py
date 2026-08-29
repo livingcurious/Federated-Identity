@@ -35,6 +35,9 @@ _SEED_USERS: tuple[tuple[str, str, str, str, list[str]], ...] = (
     ("user-ada", "ada@example.com", "correct horse battery", "Ada Lovelace", ["user", "engineer"]),
     ("user-grace", "grace@example.com", "hopper-admin-2024", "Grace Hopper", ["user", "admin"]),
     ("user-alan", "alan@example.com", "turing-test-pass", "Alan Turing", ["user"]),
+    # Non-admin — used to demonstrate the SP admin panel correctly denying access.
+    ("user-marie", "marie@example.com", "curie-radium-1903", "Marie Curie", ["user"]),
+    ("user-linus", "linus@example.com", "torvalds-penguin", "Linus Torvalds", ["user"]),
 )
 
 

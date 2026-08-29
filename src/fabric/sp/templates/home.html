@@ -17,6 +17,7 @@
       <div class="links">
         <p class="muted">Already signed in across the fabric — try another app:</p>
         {% for other in others %}<p>→ <a href="{{ other.base_url }}">{{ other.display_name }}</a></p>{% endfor %}
+        {% if is_admin %}<p>→ <a href="/admin">Admin panel</a></p>{% endif %}
         <p><a href="/logout">Sign out</a></p>
       </div>
     {% else %}
