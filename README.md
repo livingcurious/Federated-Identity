@@ -67,44 +67,44 @@ lifecycle and persistence.
 - **Mutual authentication and onboarding** — SP → IdP via `private_key_jwt` (a signed
   assertion, no shared secret, single-use `jti`). IdP → SP via JWT signature checked
   against published JWKS plus `iss` pinning; that half depends on trusting the network
-  path the JWKS was fetched over, since there's no TLS here (see "cut," below).
-  Onboarding starts as a one-shot trusted-provisioner script that seeds both SPs at
-  bootstrap; we added a second path, an Okta-style admin flow
-  (`POST /admin/clients` → pending client → SP generates its own keypair → submits only
-  the public half via `register-key`). Neither path is automatic self-registration.
+  path the JWKS was fetched over, since there's no TLS here (see "Cut," below).
+  Onboarding supports two paths: a one-shot trusted-provisioner script that seeds both
+  SPs at bootstrap, and an Okta-style admin flow (`POST /admin/clients` → pending client
+  → SP generates its own keypair → submits only the public half via `register-key`).
+  Neither path is automatic self-registration.
 - **Signing-key rotation without downtime** — the IdP rotates its active signing key
   while the previous one stays valid in JWKS until explicitly retired, so no SP needs a
-  restart. We extended the same rotate/revoke/register lever to SP keys, which had none
-  originally.
+  restart. The same rotate/revoke/register lever covers SP keys.
 - **Compromise containment** — IdP key revoke, IdP session revoke with back-channel
-  logout to every SP that session reached, and (added by us) SP key revoke, which didn't
-  exist before this work — an SP key leak was previously permanent.
+  logout to every SP the session reached, and SP key revoke, independent of the IdP's
+  own key material.
 - **Session lifecycle and persistence** — idle and absolute timeouts, SQLite-backed,
   sessions survive a restart, and each SP's session is independent, linked to the IdP
   session only by `idp_sid`.
 
 **Cut, with the reason:**
 
-- **TLS/HTTPS** — out of scope from the original design; everything runs on `localhost`
-  over HTTP. This means the IdP-proves-itself-to-SP half of mutual authentication
-  depends on trusting the network path a JWKS document was fetched over, not on a
-  certificate chain.
+- **TLS/HTTPS** — out of scope; everything runs on `localhost` over HTTP. The
+  IdP-proves-itself-to-SP half of mutual authentication depends on trusting the network
+  path a JWKS document was fetched over, not on a certificate chain.
 - **Rate limiting or lockout on login** — not built. Argon2id makes each password guess
   expensive, but there's no lockout.
 - **Atomic single-use enforcement on the authorization code** — a race window under
-  concurrent requests could let the same code be redeemed twice. Identified, not fixed.
-- **Replay tracking on back-channel logout tokens** — identified, not built. Low impact
-  since revocation is idempotent.
+  concurrent requests could let the same code be redeemed twice.
+- **Replay tracking on back-channel logout tokens** — not built. Low impact since
+  revocation is idempotent.
 - **A live third SP process** to prove dynamic client registration end to end in one
-  run, rather than in separately-tested pieces — deferred as more than the feature
-  needed to prove its point.
+  run — the admin-API mechanics are demonstrated directly instead, without standing up
+  a third service.
 - **CSRF tokens** on session-authenticated POST endpoints — not built. `SameSite=Lax`
-  on every session cookie is the only defense today. Since `idp`, `sp-a`, and `sp-b` are
-  distinct hostnames (different sites, by browser rules), it does block a cross-site
-  POST — but it has a real gap: it doesn't cover `GET /logout`, and there's no
-  server-side token as a second layer.
+  on every session cookie is the only defense. Since `idp`, `sp-a`, and `sp-b` are
+  distinct hostnames, it does block a real cross-site POST, but it has a gap: it
+  doesn't cover `GET /logout`, and there's no server-side token as a second layer.
+- **Tamper-evident audit logging** — not built. Every security-relevant action writes a
+  JSON log line and a persisted database row, but the trail itself isn't signed or
+  hash-chained, so write access to the database could edit history undetected.
 - **mTLS on the SP↔IdP connection, and HSM/KMS-backed signing** — both real options,
-  both declined as more than this project's scope needs.
+  both out of this project's scope.
 
 ---
 
@@ -113,38 +113,35 @@ lifecycle and persistence.
 - **One container and one database per SP**, isolated by the container runtime rather
   than by convention alone. Each SP mounts only its own volume; SP-A and SP-B sit on
   networks with no route between them.
-- **Splitting the IdP into two processes** — a public app (login, `/authorize`, JWKS)
-  and an internal app (`/token`, `/admin/*`), the internal one with no port published to
-  the host under containers. We made this change after recognizing that network
-  segmentation between SP-A and SP-B never actually protected `/token` or `/admin`: a
-  stolen key or the admin token is a credential, and nothing about where a request comes
-  from was ever checked before this split.
+- **The IdP runs as two processes** — a public app (login, `/authorize`, JWKS) and an
+  internal app (`/token`, `/admin/*`), the internal one with no port published to the
+  host. Network segmentation between SP-A and SP-B alone doesn't protect `/token` or
+  `/admin`: a stolen SP key or the admin token is a credential, and a credential check
+  doesn't care where the request came from — the internal app's lack of a published
+  port is the actual boundary for those two surfaces.
 - **No shared secrets.** `private_key_jwt` instead of a client secret for SP-to-IdP
   authentication. Every credential in this system is an asymmetric keypair, so
   revocation is a flag flip, not a race to invalidate a value someone else already has a
   copy of.
-- **Authorization and roles added beyond the original feature list.** The review process
-  found that any authenticated user could SSO into any SP — nothing checked whether they
-  should be able to. We added IdP-level `groups` and a per-client `authorized_groups`
-  list, checked before any authorization code is minted, deny-by-default: a newly
-  registered client starts with `authorized_groups=[]` and is locked out of every group
-  until an admin explicitly grants one, and revoking a group blocks new logins/SSO into
-  that SP for that group from then on (it doesn't retroactively end sessions already
-  active). Alongside that, we decoupled roles from the IdP entirely: `roles` was removed
-  from the `id_token`, and each SP now keeps its own local role table, so the same
-  person can hold different roles at different SPs.
-- **A one-shot, trusted provisioner instead of dynamic self-registration** for the two
-  original SPs — a script that touches all three databases exactly once, at bootstrap,
-  then exits. The later admin-driven registration flow for new clients keeps the same
-  property: an explicit trusted actor approves every client, never automatic
-  self-registration.
+- **Authorization and roles, beyond the original feature list.** Authorization is
+  IdP-level `groups` checked against a per-client `authorized_groups` list,
+  deny-by-default, before any authorization code is minted: a client with
+  `authorized_groups=[]` is locked out of every group until an admin grants one, and
+  revoking a group blocks new logins/SSO for that group from then on (it doesn't
+  retroactively end sessions already active). Roles are decoupled from the IdP
+  entirely: the `id_token` carries no `roles` claim; each SP keeps its own local role
+  table, so the same identity can hold a different role at each SP.
+- **A one-shot, trusted provisioner** handles registration for the two original SPs — a
+  script that touches all three databases exactly once, at bootstrap, then exits. The
+  admin-driven registration flow for new clients keeps the same property: an explicit
+  trusted actor approves every client; there is no automatic self-registration path.
 - **A minimal, additive-only migration shim** instead of a full migration framework — it
   adds missing columns on boot, nothing more. A schema change bigger than that (like
-  moving from roles to groups) is treated as breaking and needs a reseed.
-- **Structured audit logging from day one.** Every security-relevant action writes a
-  JSON log line and a persisted database row, independent of the rest of the request.
-  This is what let every fix in this project be checked after the fact instead of taken
-  on faith.
+  moving from roles to groups) needs a reseed.
+- **Structured audit logging.** Every security-relevant action writes a JSON log line
+  and a persisted database row, independent of the rest of the request — this is what
+  makes every containment action and access decision checkable after the fact instead
+  of taken on faith.
 
 ---
 
@@ -195,9 +192,9 @@ graph TB
 
 ---
 
-## Where you were good and where you needed my input to enhance the project
+## AI Usage: Where it Helped and Where You Lacked
 
-Where the build held up on its own:
+Where it helped:
 
 - The session and audit-logging design — timeouts, SQLite persistence, structured logs
   with a persisted trail — was solid from the start and never needed a correction.
@@ -212,7 +209,7 @@ Where the build held up on its own:
 - Choosing Ed25519 over RSA and ECDSA, and pinning the verifier to a single algorithm,
   predates this round of work, but held up cleanly under direct questions about why.
 
-Where it needed your input:
+Where you lacked:
 
 - The biggest one: the original security review missed that any authenticated user
   could SSO into any SP. It found the authorization-code race, the audit-log spoofing,
