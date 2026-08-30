@@ -105,6 +105,12 @@ lifecycle and persistence.
   hash-chained, so write access to the database could edit history undetected.
 - **mTLS on the SP↔IdP connection, and HSM/KMS-backed signing** — both real options,
   both out of this project's scope.
+- **An admin lever to change an individual user's group membership** — not built. Group
+  grant/revoke exists only at the client level (`authorize_group`/`revoke_group` on a
+  per-SP `authorized_groups` list); which groups a *user* belongs to is seed-only, fixed
+  at bootstrap, with no runtime mutator. Granting or revoking a whole group's access to
+  an SP is live and immediate for anyone already signed in; moving one specific person
+  into a different group is not possible without a reseed.
 
 ---
 
