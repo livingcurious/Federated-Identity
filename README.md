@@ -236,7 +236,7 @@ Where it helped:
 - Choosing Ed25519 over RSA and ECDSA, and pinning the verifier to a single algorithm,
   predates this round of work, but held up cleanly under direct questions about why.
 
-Where you lacked:
+Where It lacked:
 
 - The biggest one: the original security review missed that any authenticated user
   could SSO into any SP. It found the authorization-code race, the audit-log spoofing,
