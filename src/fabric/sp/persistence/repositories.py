@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import delete, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fabric.sp.persistence.models import (
@@ -103,6 +104,27 @@ class SPUserRoleRepository:
             self._s.add(row)
         else:
             row.roles = roles
+        return row
+
+    async def get_or_create_default(self, subject: str, default_roles: list[str]) -> SPUserRoleRow:
+        """Atomically ensure a role row exists for ``subject``, defaulting to
+        ``default_roles`` if none does yet.
+
+        A plain "check, then insert if missing" (as ``upsert`` does for a brand-new
+        subject) races under concurrent first-logins for the same subject: two
+        requests can both see no row and both try to insert one, and the second
+        insert fails on the primary key. ``INSERT ... ON CONFLICT DO NOTHING`` makes
+        the "create if absent" step a single atomic statement instead — whichever
+        request's insert loses the race just no-ops rather than raising.
+        """
+        stmt = (
+            sqlite_insert(SPUserRoleRow)
+            .values(subject=subject, roles=default_roles)
+            .on_conflict_do_nothing(index_elements=["subject"])
+        )
+        await self._s.execute(stmt)
+        row = await self._s.get(SPUserRoleRow, subject)
+        assert row is not None
         return row
 
     async def all(self) -> list[SPUserRoleRow]:

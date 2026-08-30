@@ -26,12 +26,10 @@ class SPSessionService:
         # Roles are entirely local to this SP — never asserted by the IdP (see
         # DESIGN.md's role-decoupling rationale). First-ever login here gets the
         # default role, written through so the HR panel's roster is always complete.
-        role_row = await self._roles.get(subject)
-        if role_row is not None:
-            roles = list(role_row.roles)
-        else:
-            roles = ["user"]
-            await self._roles.upsert(subject, roles)
+        # Atomic (get_or_create_default), not check-then-insert: two concurrent
+        # first-logins for the same subject must not race each other.
+        role_row = await self._roles.get_or_create_default(subject, ["user"])
+        roles = list(role_row.roles)
 
         now = utc_now()
         row = SPSessionRow(

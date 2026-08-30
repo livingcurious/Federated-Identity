@@ -193,7 +193,7 @@ graph TB
 
 | Category | Threat | Scenario | Mitigation | Residual risk |
 |---|---|---|---|---|
-| RBAC | Role self-escalation | An `hr`-role holder calls `POST /hr/assign-role` targeting their own subject, or with `role=admin` | The endpoint rejects any grant of `admin` and any self-targeted assignment, before touching the role table; the `admin` option isn't even offered in the HR panel's role selector | — |
+| RBAC | Role self-escalation | An `hr`-role holder calls `POST /hr/assign-role` targeting their own subject, with `role=admin`, or with a role they don't personally hold | The endpoint rejects `admin`, self-targeted assignment, and granting a role the caller doesn't already hold, before touching the role table; the HR panel's role selector only ever offers roles the caller holds | — |
 | RBAC | Role assignment strips existing roles | An admin assigns a second role to a user who already holds one | `hr_assign_role` merges the new role into the subject's existing role set instead of replacing it | — |
 | RBAC | Role change vs. a live session | A role is granted or revoked while the affected user already has an active session | None — `PublicUser.roles` is a snapshot taken at login and stored on the session row, not re-read from the role table per request | A revoked role stays effective, and a newly granted role doesn't take effect, until the next login |
 | SP ↔ IdP comms | No transport authentication | The network path between an SP and `idp-internal` is intercepted or spoofed | None at the transport layer — no TLS, no mTLS in this demo | Every SP↔IdP guarantee below, `private_key_jwt` included, ultimately depends on trusting that network path |
@@ -201,6 +201,8 @@ graph TB
 | SP ↔ IdP comms | IdP signing-key compromise | Attacker forges tokens for any user, any SP | Key rotate and revoke, with a JWKS overlap window so rotation needs no SP downtime | An SP's JWKS cache only refreshes when it sees an unrecognized `kid` — a key the IdP has revoked or retired isn't proactively dropped from an SP that already has it cached |
 | SP ↔ IdP comms | Client-assertion replay | A captured `private_key_jwt` assertion is resubmitted | `jti` uniqueness enforced by a database primary key, short TTL, bound to the token endpoint | — |
 | SP ↔ IdP comms | Admin-API access | Attacker without the admin token calls `/admin/*` | `X-Admin-Token` checked with an Argon2 `verify` against the stored hash (constant-work), on the internal app only, never the public one | A single shared token with no per-operator scoping or expiry |
+| Concurrency | Concurrent-write corruption | Many simultaneous requests write to the same SQLite file — including the IdP's public and internal apps, two separate processes both writing `idp.db` | WAL mode + a busy timeout for correct cross-process commit visibility, plus a per-process lock serializing all DB access within one process (SQLite's own busy-timeout retry proved unreliable under real concurrent load in this container environment, confirmed live — see the README's "Where you lacked") | The per-process lock fully serializes DB-touching requests within a service — a burst of concurrent requests queues rather than crashes or corrupts data, but at the cost of throughput; this isn't built to scale past light concurrency |
+| Concurrency | First-login role race | Two concurrent first-logins for the same brand-new user | `INSERT ... ON CONFLICT DO NOTHING` makes "create the default role if none exists yet" a single atomic statement, not a check-then-insert | — |
 | Cross-tenant | Cross-tenant SSO access | An authenticated user tries to SSO into an SP they shouldn't reach | IdP-level `groups` checked against per-client `authorized_groups`, deny-by-default, before any code is minted | Group membership itself is seed-only; revoking a group blocks new logins/SSO for it from then on, not sessions already active |
 | Cross-tenant | Cross-SP token confusion | A token minted for SP-A is presented to SP-B | `aud`/`azp` bound to exactly one SP; each SP checks its own `client_id` independently | — |
 | Session | Cookie theft via XSS | A script reads or exfiltrates the session cookie | `HttpOnly`; the cookie itself is a 256-bit CSPRNG opaque token (`secrets.token_urlsafe(32)`) looked up server-side — no claims encoded client-side to tamper with | Stops offline replay of a stolen cookie, not a live XSS payload acting through the browser's own requests while it runs |
@@ -249,3 +251,13 @@ Where you lacked:
   how a real IdP onboards an app.
 - The CSRF gap was surfaced by your question in this conversation. It had been sitting
   there, unaddressed, through every earlier round.
+- Database concurrency was never load-tested until you asked directly whether writes
+  were actually safe under concurrency, and whether the IdP's public and internal apps
+  sharing one SQLite file was a real problem rather than just a network-placement
+  detail. Both turned out to be real: a check-then-insert race in first-login role
+  creation (`UNIQUE constraint failed`), and — worse — a single-shared-connection fix
+  from an *earlier* round in this same project turned out to make concurrent access
+  worse, not better, once actually tested under load (the token endpoint failing to
+  find a code the public app had just issued, up to ~98% of the time at 60 concurrent
+  logins). Fixed with WAL mode plus a per-process write lock, verified with the same
+  concurrency test that found the bug, run repeatedly.

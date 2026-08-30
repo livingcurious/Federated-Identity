@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Annotated
 
@@ -18,6 +19,15 @@ from fabric.idp.service.users import verify_password
 IDP_SESSION_COOKIE = "fabric_idp_sid"
 ADMIN_TOKEN_META_KEY = "admin_token_hash"
 
+# The public app and the internal app are separate processes (see main.py) and each
+# gets its own copy of this module-level lock -- correctly so: it only needs to
+# serialize DB access *within* one process. Cross-process consistency between the two
+# (both writing idp.db) is WAL mode's job (common/database.py), not this lock's --
+# asyncio.Lock can't span processes anyway. Same rationale as sp/deps.py's lock: SQLite's
+# own busy-timeout retry proved unreliable under real concurrent load in this project's
+# container environment.
+_DB_LOCK = asyncio.Lock()
+
 
 def get_settings_dep() -> Settings:
     return get_settings()
@@ -26,7 +36,7 @@ def get_settings_dep() -> Settings:
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
     """Yield a session and commit at the end of the request (rollback on error)."""
     maker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
-    async with maker() as session:
+    async with _DB_LOCK, maker() as session:
         try:
             yield session
             await session.commit()

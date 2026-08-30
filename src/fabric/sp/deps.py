@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Annotated
 
@@ -12,6 +13,13 @@ from fabric.common.audit import AuditLog
 from fabric.common.config import Settings, get_settings
 from fabric.sp.persistence.models import AuditEventRow
 from fabric.sp.service.idp_client import IdPClient
+
+# This service is a single process (no multiple uvicorn workers), so one lock per
+# process fully serializes DB access without needing SQLite's own busy-timeout retry
+# to resolve same-process write contention. That retry proved unreliable under real
+# concurrent load in this project's container environment -- "database is locked"
+# still surfaced even with a 5-second busy_timeout configured (see common/database.py).
+_DB_LOCK = asyncio.Lock()
 
 # Cookies are not port-specific, so two SPs on the same host must use distinct cookie
 # names or they would clobber each other's session. Name the cookie per client_id.
@@ -29,7 +37,7 @@ def get_settings_dep() -> Settings:
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
     maker: async_sessionmaker[AsyncSession] = request.app.state.sessionmaker
-    async with maker() as session:
+    async with _DB_LOCK, maker() as session:
         try:
             yield session
             await session.commit()
