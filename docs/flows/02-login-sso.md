@@ -35,7 +35,7 @@ live on 2026-08-29 against the container deployment (hostnames resolved via curl
      Jinja2's autoescape — confirmed no XSS via any of these reflected values).
 
 3. **Browser → IdP: `POST /login`** with `email=ada@example.com`,
-   `password=correct horse battery`, plus the 7 hidden fields from step 2
+   `password=correct horse battery!1`, plus the 7 hidden fields from step 2
    (`idp/api/auth_ui.py::login`).
    - Re-validates the same params (defense in depth against a tampered hidden form).
    - `UserService.authenticate()` (`idp/service/users.py`): looks up `UserRow` by

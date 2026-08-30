@@ -36,12 +36,12 @@ Seeded users (email / password / IdP group):
 
 | Email | Password | Group |
 |---|---|---|
-| `ada@example.com` | `correct horse battery` | engineering |
-| `grace@example.com` | `hopper-admin-2024` | engineering |
-| `alan@example.com` | `turing-test-pass` | engineering |
-| `marie@example.com` | `curie-radium-1903` | finance-dept |
-| `linus@example.com` | `torvalds-penguin` | engineering |
-| `diana@example.com` | `diana-hr-secure-1` | hr-dept |
+| `ada@example.com` | `correct horse battery!1` | engineering |
+| `grace@example.com` | `hopper-admin-2024!` | engineering |
+| `alan@example.com` | `turing-test-pass!1` | engineering |
+| `marie@example.com` | `curie-radium-1903!` | finance-dept |
+| `linus@example.com` | `torvalds-penguin!1` | engineering |
+| `diana@example.com` | `diana-hr-secure-1!` | hr-dept |
 
 Try it: open SP-A → sign in as `ada@example.com` → land back on SP-A, signed in → open
 SP-B → signed in immediately, no second login. "Sign out everywhere" from either ends
@@ -168,27 +168,36 @@ graph TB
     SPB -->|private_key_jwt| IdPInt
     Operator -->|X-Admin-Token| IdPInt
 
-    Attacker -.->|XSS or CSRF| Browser
     Attacker -.->|RCE, key theft| SPA
-    Attacker -.->|no TLS, network spoofing| IdPPub
+    Attacker -.->|no TLS, network spoofing| IdPInt
+    Attacker -.->|XSS or CSRF| Browser
     SPA -.->|no route| SPB
 ```
 
-| Threat | Scenario | Mitigation | Residual risk |
-|---|---|---|---|
-| Cross-tenant access | An authenticated user tries to SSO into an SP they shouldn't reach | IdP-level `groups` checked against per-client `authorized_groups`, deny-by-default, before any code is minted | Group membership itself is seed-only; there's no lever to manage it at the IdP, only to grant or revoke a group's access to a client |
-| SP key theft | RCE or a leaked secret exposes an SP's private key | `revoke-key` (instant), `rotate_sp_key.py` (new key, that SP's own database only), `register-key` | Manual — nothing revokes automatically; the window between compromise and revocation depends on someone noticing |
-| IdP signing-key compromise | Attacker forges tokens for any user, any SP | Key rotate and revoke, with a JWKS overlap window so rotation needs no SP downtime | Same manual-detection gap as above |
-| Session theft via XSS | A script reads or exfiltrates the session cookie | `HttpOnly` on every session cookie | Stops offline replay of a stolen cookie, not a live XSS payload acting through the browser's own same-origin requests while it runs |
-| CSRF | A cross-site form or script forces a state change while a session cookie is valid | `SameSite=Lax` on every session cookie — `idp`/`sp-a`/`sp-b` are distinct hostnames, so this is a real cross-site boundary | Doesn't cover `GET /logout`; no server-side token as a second layer |
-| Algorithm confusion | Attacker sends `alg: none`, or reuses a public key as an HMAC secret | The verifier only ever accepts `algorithms=["Ed25519"]`, never the token's own header | — |
-| Authorization-code replay | A leaked or intercepted code is redeemed by someone other than the SP that requested it | PKCE with the verifier held server-side, single-use code, 60-second expiry | The single-use check isn't atomic under concurrent requests; exploiting it still needs the verifier, which never leaves the SP |
-| Client-assertion replay | A captured `private_key_jwt` assertion is resubmitted | `jti` uniqueness enforced by a database primary key, short TTL, bound to the token endpoint | — |
-| Audit log spoofing | Attacker forges the source IP recorded against their own actions | `X-Forwarded-For` only trusted from a configured proxy allowlist; uvicorn's own default trust of that header is disabled | The audit trail itself isn't tamper-evident — no signing or hash-chaining of entries |
-| IdP impersonation | Attacker sits at the IdP's address and serves a fake JWKS/token endpoint | None — this is what TLS and certificate validation would close | Open. SP trust in the IdP is address-based today, not cryptographically anchored |
-| Compromised SP | RCE inside SP-A | No filesystem access to the IdP's or SP-B's database, no network route to SP-B, its key is independently revocable | The container boundary depends on the container runtime itself not being compromised |
-| Compromised provisioner | A tampered seed script or image compromises every database it touches | It's the only component that ever touches more than one volume, and only once, before any service starts | No image signing or dependency scanning — a general software-supply-chain gap, not specific to this project |
-| Container or kernel escape | A 0-day breaks out of the container runtime | Out of scope; this tier needs separate VMs or hosts | Explicit non-goal |
+| Category | Threat | Scenario | Mitigation | Residual risk |
+|---|---|---|---|---|
+| RBAC | Role self-escalation | An `hr`-role holder calls `POST /hr/assign-role` targeting their own subject, or with `role=admin` | The endpoint rejects any grant of `admin` and any self-targeted assignment, before touching the role table; the `admin` option isn't even offered in the HR panel's role selector | — |
+| RBAC | Role assignment strips existing roles | An admin assigns a second role to a user who already holds one | `hr_assign_role` merges the new role into the subject's existing role set instead of replacing it | — |
+| RBAC | Role change vs. a live session | A role is granted or revoked while the affected user already has an active session | None — `PublicUser.roles` is a snapshot taken at login and stored on the session row, not re-read from the role table per request | A revoked role stays effective, and a newly granted role doesn't take effect, until the next login |
+| SP ↔ IdP comms | No transport authentication | The network path between an SP and `idp-internal` is intercepted or spoofed | None at the transport layer — no TLS, no mTLS in this demo | Every SP↔IdP guarantee below, `private_key_jwt` included, ultimately depends on trusting that network path |
+| SP ↔ IdP comms | SP key theft | RCE or a leaked secret exposes an SP's private key | `revoke-key` (checked before any signature verification, so it's instant), `rotate_sp_key.py` (new key, that SP's own database only), `register-key` | Manual — nothing revokes automatically; the window between compromise and revocation depends on someone noticing |
+| SP ↔ IdP comms | IdP signing-key compromise | Attacker forges tokens for any user, any SP | Key rotate and revoke, with a JWKS overlap window so rotation needs no SP downtime | An SP's JWKS cache only refreshes when it sees an unrecognized `kid` — a key the IdP has revoked or retired isn't proactively dropped from an SP that already has it cached |
+| SP ↔ IdP comms | Client-assertion replay | A captured `private_key_jwt` assertion is resubmitted | `jti` uniqueness enforced by a database primary key, short TTL, bound to the token endpoint | — |
+| SP ↔ IdP comms | Admin-API access | Attacker without the admin token calls `/admin/*` | `X-Admin-Token` checked with an Argon2 `verify` against the stored hash (constant-work), on the internal app only, never the public one | A single shared token with no per-operator scoping or expiry |
+| Cross-tenant | Cross-tenant SSO access | An authenticated user tries to SSO into an SP they shouldn't reach | IdP-level `groups` checked against per-client `authorized_groups`, deny-by-default, before any code is minted | Group membership itself is seed-only; revoking a group blocks new logins/SSO for it from then on, not sessions already active |
+| Cross-tenant | Cross-SP token confusion | A token minted for SP-A is presented to SP-B | `aud`/`azp` bound to exactly one SP; each SP checks its own `client_id` independently | — |
+| Session | Cookie theft via XSS | A script reads or exfiltrates the session cookie | `HttpOnly`; the cookie itself is a 256-bit CSPRNG opaque token (`secrets.token_urlsafe(32)`) looked up server-side — no claims encoded client-side to tamper with | Stops offline replay of a stolen cookie, not a live XSS payload acting through the browser's own requests while it runs |
+| Session | Fixation | Attacker sets a victim's session cookie before they authenticate | Not exploitable — the session id is only ever generated server-side, after authentication completes; no code path sets the cookie from a client-supplied value | — |
+| Session | Stale or long-lived reuse | A stolen or old session is replayed indefinitely | Idle and absolute timeouts both checked on every request; the idle window slides, the absolute one doesn't | — |
+| JWT configuration | Algorithm confusion | Attacker sends `alg: none`, or reuses a public key as an HMAC secret | The verifier only ever accepts a hardcoded `algorithms=["Ed25519"]` allow-list — it never reads the algorithm from the token's own header | — |
+| JWT configuration | Authorization-code replay | A leaked or intercepted code is redeemed by someone other than the SP that requested it | PKCE with the verifier held server-side, single-use code (deleted from storage on first read), 60-second expiry | The single-use check isn't atomic under concurrent requests; exploiting it still needs the verifier, which never leaves the SP |
+| JWT configuration | Callback / `state` replay | A captured `state`+`code` pair from a `/callback` URL is replayed | The pending-auth row backing that `state` is deleted on first read; a second `/callback` with the same `state` fails outright | — |
+| Browser | CSRF | A cross-site form or script forces a state change while a session cookie is valid | `SameSite=Lax` on every session cookie — `idp`/`sp-a`/`sp-b` are distinct hostnames, so this is a real cross-site boundary | Doesn't cover `GET /logout`; no server-side token as a second layer |
+| Infra | Audit log spoofing | Attacker forges the source IP recorded against their own actions | `X-Forwarded-For` only trusted from a configured proxy allowlist; uvicorn's own default trust of that header is disabled | The audit trail itself isn't tamper-evident — no signing or hash-chaining of entries |
+| Infra | IdP impersonation | Attacker sits at the IdP's address and serves a fake JWKS/token endpoint | None — this is what TLS and certificate validation would close | Open. SP trust in the IdP is address-based today, not cryptographically anchored |
+| Infra | Compromised SP | RCE inside SP-A | No filesystem access to the IdP's or SP-B's database, no network route to SP-B, its key is independently revocable | The container boundary depends on the container runtime itself not being compromised |
+| Infra | Compromised provisioner | A tampered seed script or image compromises every database it touches | It's the only component that ever touches more than one volume, and only once, before any service starts | No image signing or dependency scanning — a general software-supply-chain gap, not specific to this project |
+| Infra | Container or kernel escape | A 0-day breaks out of the container runtime | Out of scope; this tier needs separate VMs or hosts | Explicit non-goal |
 
 ---
 

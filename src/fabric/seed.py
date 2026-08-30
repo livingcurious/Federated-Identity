@@ -35,12 +35,12 @@ from fabric.sp.persistence.repositories import ClientKeyRepository, SPUserRoleRe
 # ClientRow.authorized_groups / _DEFAULT_AUTHORIZED_GROUPS below) — NOT permissions.
 # Permissions are entirely SP-local (see _SEED_LOCAL_ROLES).
 _SEED_USERS: tuple[tuple[str, str, str, str, list[str]], ...] = (
-    ("user-ada", "ada@example.com", "correct horse battery", "Ada Lovelace", ["engineering"]),
-    ("user-grace", "grace@example.com", "hopper-admin-2024", "Grace Hopper", ["engineering"]),
-    ("user-alan", "alan@example.com", "turing-test-pass", "Alan Turing", ["engineering"]),
-    ("user-marie", "marie@example.com", "curie-radium-1903", "Marie Curie", ["finance-dept"]),
-    ("user-linus", "linus@example.com", "torvalds-penguin", "Linus Torvalds", ["engineering"]),
-    ("user-diana", "diana@example.com", "diana-hr-secure-1", "Diana Prince", ["hr-dept"]),
+    ("user-ada", "ada@example.com", "correct horse battery!1", "Ada Lovelace", ["engineering"]),
+    ("user-grace", "grace@example.com", "hopper-admin-2024!", "Grace Hopper", ["engineering"]),
+    ("user-alan", "alan@example.com", "turing-test-pass!1", "Alan Turing", ["engineering"]),
+    ("user-marie", "marie@example.com", "curie-radium-1903!", "Marie Curie", ["finance-dept"]),
+    ("user-linus", "linus@example.com", "torvalds-penguin!1", "Linus Torvalds", ["engineering"]),
+    ("user-diana", "diana@example.com", "diana-hr-secure-1!", "Diana Prince", ["hr-dept"]),
 )
 
 # Which groups may SSO into each SP at all (empty/omitted client_id = nobody).

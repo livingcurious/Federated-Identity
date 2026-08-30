@@ -31,6 +31,7 @@ ADMIN_ROLE = "admin"
 FINANCE_ROLE = "finance"
 HR_ROLE = "hr"
 KNOWN_ROLES = ("user", "admin", "finance", "hr")
+GRANTABLE_BY_HR = tuple(r for r in KNOWN_ROLES if r != ADMIN_ROLE)
 CURRENT_QUARTER = "2026-Q3"
 
 
@@ -279,7 +280,9 @@ async def hr_panel(
         return result
     assignments = await SPUserRoleRepository(session).all()
     return _TEMPLATES.TemplateResponse(
-        request, "hr.html", {"app": _me(settings), "assignments": assignments, "known_roles": KNOWN_ROLES}
+        request,
+        "hr.html",
+        {"app": _me(settings), "assignments": assignments, "grantable_roles": GRANTABLE_BY_HR},
     )
 
 
@@ -305,14 +308,39 @@ async def hr_assign_role(
             {"app": _me(settings), "message": f"'{role}' is not a recognized role."},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    await SPUserRoleRepository(session).upsert(subject, [role])
+    if role not in GRANTABLE_BY_HR or subject == user.sub:
+        await audit.record(
+            Event.SP_ACCESS_DENIED,
+            Severity.WARNING,
+            subject=user.sub,
+            outcome="denied",
+            detail={
+                "path": "/hr/assign-role",
+                "reason": "hr cannot grant admin, and cannot assign roles to itself",
+                "target_subject": subject,
+                "requested_role": role,
+            },
+        )
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "forbidden.html",
+            {
+                "app": _me(settings),
+                "message": "The hr role cannot grant admin, and cannot assign roles to itself.",
+            },
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    roles_repo = SPUserRoleRepository(session)
+    existing = await roles_repo.get(subject)
+    merged_roles = sorted({*(existing.roles if existing else []), role})
+    await roles_repo.upsert(subject, merged_roles)
     await audit.record(
         Event.SP_HR_ROLE_ASSIGNED,
         Severity.NOTICE,
         actor=user.sub,
         subject=subject,
         outcome="assigned",
-        detail={"role": role},
+        detail={"role": role, "roles": merged_roles},
     )
     return RedirectResponse(url="/hr", status_code=status.HTTP_303_SEE_OTHER)
 
