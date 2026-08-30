@@ -46,11 +46,15 @@ def get_idp(request: Request) -> IdPClient:
 def client_ip(request: Request, settings: Settings) -> str | None:
     """The caller's IP — ``X-Forwarded-For`` is only honored from a configured trusted
     proxy; otherwise it is attacker-controlled and would let anyone spoof the source IP
-    recorded in the security audit trail."""
+    recorded in the security audit trail.
+
+    Trusting the direct peer only certifies the *last* hop it appended to the header —
+    every earlier entry could have been typed in by the original caller before the
+    request ever reached that proxy. So this takes the last entry, not the first."""
     direct = request.client.host if request.client else None
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded and direct in settings.trusted_proxy_ip_set:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     return direct
 
 

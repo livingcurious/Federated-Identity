@@ -353,7 +353,6 @@ Containerfile             single image for all roles
 compose.yaml              isolated Docker/Podman topology (provisioner + segmented services
                           + `idp-internal`, which has no published port — see §5.7)
 container-start.sh        Docker-if-available, else install+use Podman, then compose up --build
-podman-start.sh           /etc/hosts check + `podman compose up --build` (Podman-only)
 ```
 
 ---

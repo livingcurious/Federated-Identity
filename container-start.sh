@@ -81,6 +81,50 @@ ensure_podman_machine() {
   fi
 }
 
+ensure_compose_provider() {
+  # `podman compose` has no compose engine of its own -- it's a thin wrapper that
+  # shells out to docker-compose or podman-compose (see `podman compose --help`).
+  # Installing podman alone does not pull either one in, so without this a fresh
+  # machine gets all the way through building images and only fails at the very
+  # last step with "unable to find any compose provider."
+  if command -v docker-compose >/dev/null 2>&1 || command -v podman-compose >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "==> No compose provider found for Podman — installing podman-compose"
+  case "$(uname -s)" in
+    Darwin)
+      if ! command -v brew >/dev/null 2>&1; then
+        echo "!! Homebrew is required to install podman-compose on macOS." >&2
+        echo "   Install it from https://brew.sh, then re-run this script." >&2
+        exit 1
+      fi
+      brew install podman-compose
+      ;;
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update && sudo apt-get install -y podman-compose
+      elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y podman-compose
+      elif command -v pacman >/dev/null 2>&1; then
+        sudo pacman -Sy --noconfirm podman-compose
+      elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper install -y podman-compose
+      elif command -v pip3 >/dev/null 2>&1; then
+        pip3 install --user podman-compose
+      else
+        echo "!! Could not detect a supported package manager (apt/dnf/pacman/zypper/pip3)." >&2
+        echo "   Install podman-compose manually: https://github.com/containers/podman-compose" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "!! Unsupported OS for automatic podman-compose install: $(uname -s)" >&2
+      echo "   Install podman-compose manually: https://github.com/containers/podman-compose" >&2
+      exit 1
+      ;;
+  esac
+}
+
 compose_cmd() {
   case "$ENGINE" in
     docker)
@@ -95,13 +139,28 @@ compose_cmd() {
       fi
       ;;
     podman)
-      echo "podman compose"
+      if command -v docker-compose >/dev/null 2>&1 || command -v podman-compose >/dev/null 2>&1; then
+        echo "podman compose"
+      else
+        echo "!! Podman has no compose provider (docker-compose or podman-compose) on PATH." >&2
+        echo "   Install podman-compose: https://github.com/containers/podman-compose" >&2
+        exit 1
+      fi
       ;;
   esac
 }
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   ENGINE="docker"
+elif command -v docker >/dev/null 2>&1; then
+  echo "==> Docker is installed but its daemon isn't reachable (is Docker Desktop running?)"
+  echo "    Falling back to Podman instead of waiting on it."
+  if command -v podman >/dev/null 2>&1; then
+    ENGINE="podman"
+  else
+    install_podman
+    ENGINE="podman"
+  fi
 elif command -v podman >/dev/null 2>&1; then
   ENGINE="podman"
 else
@@ -111,6 +170,7 @@ fi
 
 if [ "$ENGINE" = "podman" ]; then
   ensure_podman_machine
+  ensure_compose_provider
 fi
 
 check_hosts
