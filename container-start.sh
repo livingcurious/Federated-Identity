@@ -177,7 +177,36 @@ check_hosts
 
 read -r -a COMPOSE <<< "$(compose_cmd)"
 echo "==> Using ${COMPOSE[*]} to bring up the fabric"
+
+DETACHED=0
+for arg in "$@"; do
+  case "$arg" in
+    -d|--detach) DETACHED=1 ;;
+  esac
+done
+
+if [ "$DETACHED" -eq 0 ]; then
+  # Foreground mode: Ctrl+C only kills this script's local compose client, not the
+  # containers. That's a no-op under Podman specifically -- the containers run inside
+  # the Podman machine VM (reached over SSH), fully decoupled from this process's
+  # lifetime, so interrupting or even kill -9'ing this script leaves everything running
+  # with nothing to show for it. Don't rely on the underlying tool's own signal
+  # handling at all; always bring the stack down ourselves on the way out (volumes are
+  # untouched -- this is a plain `down`, not `down -v`).
+  cleanup() {
+    trap - EXIT INT TERM  # only run once, however we got here
+    echo
+    echo "==> Stopping the fabric"
+    "${COMPOSE[@]}" down
+  }
+  trap cleanup EXIT INT TERM
+fi
+
 "${COMPOSE[@]}" up --build "$@"
+
+if [ "$DETACHED" -eq 0 ]; then
+  exit 0
+fi
 
 cat <<EOF
 
