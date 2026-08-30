@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin sign in · Identity Fabric</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>Identity Fabric — Admin</h1></div>
+    <p class="sub">Enter the <strong>bootstrap admin token</strong> to manage live sessions.</p>
+
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+    <form method="post" action="/admin/login" autocomplete="off">
+      <label for="admin_token">Admin token</label>
+      <input id="admin_token" name="admin_token" type="password" required autofocus
+             placeholder="••••••••••••••••" />
+
+      <button type="submit">Sign in</button>
+    </form>
+
+    <div class="hint">
+      This is the same credential the JSON admin API accepts via the
+      <code>X-Admin-Token</code> header — the console just carries it in an
+      HttpOnly, <code>SameSite=Strict</code> cookie scoped to <code>/admin</code>.
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sessions · Identity Fabric Admin</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <style>
+    /* The shared stylesheet centers a narrow auth card; the console needs a wide,
+       top-aligned working surface, so scope these overrides to the dashboard only. */
+    body { display: block; place-items: initial; padding: 28px 32px; }
+    .console { width: 100%; max-width: 1120px; margin: 0 auto; }
+    .console-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 6px; }
+    .console-head .brand { margin-bottom: 0; }
+    .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 18px 0 12px; }
+    .toolbar .count { color: var(--muted); font-size: 13px; }
+    .banner { margin: 12px 0; padding: 10px 12px; border-radius: 10px; font-size: 13px;
+              color: var(--ok); background: rgba(74, 222, 128, 0.1); border: 1px solid rgba(74, 222, 128, 0.3); }
+    .panel { background: linear-gradient(180deg, var(--panel), var(--panel-2));
+             border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px;
+               padding: 12px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    tbody td { padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: rgba(110, 168, 254, 0.06); }
+    .subject { color: var(--ink); font-weight: 600; }
+    .muted { color: var(--muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--muted); }
+    .chip { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border-radius: 999px;
+            font-size: 11px; background: #0e1428; border: 1px solid var(--line); color: var(--ink); }
+    .chip.none { color: var(--muted); }
+    .revoke-btn { margin: 0; width: auto; padding: 9px 16px; color: #0b1020;
+                  background: linear-gradient(135deg, #ff9aa0, #ff8082); box-shadow: none; }
+    .revoke-btn:disabled { filter: grayscale(0.6) brightness(0.8); cursor: not-allowed; }
+    a.logout { text-decoration: none; }
+    a.logout:hover { color: var(--ink); }
+    .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
+    input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="console">
+    <div class="console-head">
+      <div class="brand"><span class="dot"></span><h1>Identity Fabric — Sessions</h1></div>
+      <a class="logout muted" href="/admin/logout">Sign out</a>
+    </div>
+    <p class="sub">Every live SSO session. Revoking one force-logs-out that user and
+      back-channel-notifies every app they reached.</p>
+
+    {% if revoked is not none %}
+      <div class="banner">Revoked {{ revoked }} session{{ '' if revoked == '1' else 's' }}.</div>
+    {% endif %}
+
+    <form method="post" action="/admin/dashboard/revoke-selected">
+      <div class="toolbar">
+        <span class="count">{{ sessions | length }} active session{{ '' if sessions | length == 1 else 's' }}</span>
+        <button type="submit" class="revoke-btn"
+                onclick="return confirm('Force-logout the selected sessions?');">
+          Revoke selected
+        </button>
+      </div>
+
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:36px"><input type="checkbox" id="select-all" title="Select all" /></th>
+              <th>User</th>
+              <th>Session</th>
+              <th>Apps reached</th>
+              <th>Created</th>
+              <th>Last seen</th>
+              <th>Expires</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in sessions %}
+            <tr>
+              <td><input type="checkbox" name="sids" value="{{ s.sid }}" class="row-check" /></td>
+              <td>
+                <div class="subject">{{ s.name or s.subject }}</div>
+                {% if s.email %}<div class="muted">{{ s.email }}</div>{% endif %}
+                <div class="mono">{{ s.subject }}</div>
+              </td>
+              <td class="mono">{{ s.sid }}</td>
+              <td>
+                {% if s.clients %}
+                  {% for c in s.clients %}<span class="chip">{{ c }}</span>{% endfor %}
+                {% else %}
+                  <span class="chip none">none yet</span>
+                {% endif %}
+              </td>
+              <td class="muted">{{ s.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+              <td class="muted">{{ s.last_seen_at.strftime('%Y-%m-%d %H:%M') }}</td>
+              <td class="muted">
+                <div title="Idle timeout">idle {{ s.idle_expiry.strftime('%Y-%m-%d %H:%M') }}</div>
+                <div title="Absolute cap">max {{ s.absolute_expiry.strftime('%Y-%m-%d %H:%M') }}</div>
+              </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" class="empty">No active sessions.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    // "Select all" toggles every row checkbox; purely a convenience for bulk revoke.
+    const selectAll = document.getElementById("select-all");
+    const rowChecks = Array.from(document.querySelectorAll(".row-check"));
+    if (selectAll) {
+      selectAll.addEventListener("change", () => {
+        rowChecks.forEach((c) => { c.checked = selectAll.checked; });
+      });
+    }
+  </script>
+</body>
+</html>

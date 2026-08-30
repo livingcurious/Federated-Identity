@@ -10,9 +10,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette import status
 
-from fabric.common.audit import Event, Severity
+from fabric.common.audit import AuditLog, Event, Severity
+from fabric.common.config import Settings
 from fabric.common.domain import AuditEventView, SessionInfo, SigningKeyView
 from fabric.idp.deps import AuditDep, SessionDep, SettingsDep, require_admin
 from fabric.idp.persistence.repositories import AuditRepository
@@ -24,6 +26,34 @@ from fabric.idp.service.sessions import SessionService
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 _ADMIN_ACTOR = "admin"
+
+
+async def revoke_session_and_notify(
+    session: AsyncSession, settings: Settings, audit: AuditLog, sid: str, actor: str
+) -> list[str] | None:
+    """Revoke one IdP session and back-channel-notify every SP it reached.
+
+    Returns the list of notified client_ids, or ``None`` if there was no such active
+    session. Shared by the JSON API below and the browser admin console
+    (``admin_ui.py``) so both force-logout paths run the exact same sequence.
+    """
+    sessions = SessionService(session, settings)
+    row = await sessions.load_valid(sid)
+    if row is None:
+        return None
+    logout_service = LogoutService(session, settings)
+    tokens = await logout_service.build_logout_tokens(sid=row.sid, subject=row.subject)
+    await sessions.revoke(row.sid)
+    await deliver_logout_tokens(tokens)
+    await audit.record(
+        Event.SESSION_REVOKED,
+        Severity.ALERT,
+        actor=actor,
+        subject=row.subject,
+        outcome="revoked",
+        detail={"sid": sid, "notified": list(tokens.keys())},
+    )
+    return list(tokens.keys())
 
 
 @router.get("/keys", response_model=list[SigningKeyView])
@@ -67,24 +97,10 @@ async def list_sessions(session: SessionDep, settings: SettingsDep) -> list[Sess
 async def revoke_session(
     session: SessionDep, settings: SettingsDep, audit: AuditDep, sid: str
 ) -> dict[str, list[str] | str]:
-    sessions = SessionService(session, settings)
-    row = await sessions.load_valid(sid)
-    if row is None:
+    notified = await revoke_session_and_notify(session, settings, audit, sid, _ADMIN_ACTOR)
+    if notified is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="no such active session")
-
-    logout_service = LogoutService(session, settings)
-    tokens = await logout_service.build_logout_tokens(sid=row.sid, subject=row.subject)
-    await sessions.revoke(row.sid)
-    await deliver_logout_tokens(tokens)
-    await audit.record(
-        Event.SESSION_REVOKED,
-        Severity.ALERT,
-        actor=_ADMIN_ACTOR,
-        subject=row.subject,
-        outcome="revoked",
-        detail={"sid": sid, "notified": list(tokens.keys())},
-    )
-    return {"revoked": sid, "notified": list(tokens.keys())}
+    return {"revoked": sid, "notified": notified}
 
 
 @router.get("/audit", response_model=list[AuditEventView])

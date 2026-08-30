@@ -392,6 +392,42 @@ ever holds more than one volume.
 > architecturally pure (no component ever touches two volumes, even at bootstrap) at the
 > cost of a registration protocol and trust-on-first-use handling.
 
+**What the provisioner actually does, per SP** (`seed.py::_seed_sp_pair`, called from
+`seed_all()` inside the one transaction that has both `idp.db` and that SP's own db open):
+
+```python
+existing_key = await sp_keys.get(client_id)          # check that SP's OWN db
+if existing_key is None:
+    kid = crypto.new_kid()
+    key = crypto.generate_signing_key(kid)             # fresh Ed25519 keypair
+    public = crypto.public_jwk(key)
+    await sp_keys.upsert(SPClientKeyRow(
+        client_id=client_id, kid=kid,
+        public_jwk=public, private_jwk=crypto.private_jwk(key),
+    ))                                                  # BOTH halves -> that SP's own db
+else:
+    public = existing_key.public_jwk                    # key already exists -- keep it
+
+await clients.upsert(ClientRow(
+    client_id=client_id,
+    display_name=cfg.display_name,
+    redirect_uri=cfg.redirect_uri,
+    post_logout_redirect_uri=cfg.post_logout_redirect_uri,
+    backchannel_logout_uri=cfg.backchannel_logout_uri,
+    public_jwk=public,                                  # only the PUBLIC half crosses over
+    authorized_groups=_DEFAULT_AUTHORIZED_GROUPS.get(client_id, []),
+))
+```
+
+The private key is generated inside the SP's own database and never touches `idp.db` —
+the provisioner reads the public half back out only long enough to register it. Two
+things make this safe to run on every restart, not just the first boot: the keypair is
+generated exactly once (an existing one is always reused, never regenerated), and the
+`ClientRow` upsert refreshes config-derived metadata (URLs, display name) every run — so
+a port change takes effect without wiping data — but deliberately never touches
+`key_revoked` or `authorized_groups` on an existing row, so an admin's revoke or group
+grant survives a reseed (see `ClientRepository.upsert`, §5.4/§5.8).
+
 ### 10.3 Hostname model
 Tokens and the browser must agree on names, so the *same* issuer/base string is used
 everywhere. Services are reached by name (`idp`, `idp-internal`, `sp-a`, `sp-b`) —

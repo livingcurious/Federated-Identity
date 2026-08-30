@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Cookie, Depends, Header, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette import status
 
@@ -18,6 +18,11 @@ from fabric.idp.service.users import verify_password
 
 IDP_SESSION_COOKIE = "fabric_idp_sid"
 ADMIN_TOKEN_META_KEY = "admin_token_hash"
+# The admin console (admin_ui.py) sets this cookie's value to the admin token itself,
+# after checking it the same way the header path does -- a browser can't attach a
+# custom header to a plain link click or form submit, so it needs its own credential
+# carrier. Scoped to /admin only, HttpOnly, SameSite=Strict.
+IDP_ADMIN_COOKIE = "fabric_admin_session"
 
 # The public app and the internal app are separate processes (see main.py) and each
 # gets its own copy of this module-level lock -- correctly so: it only needs to
@@ -79,10 +84,14 @@ AuditDep = Annotated[AuditLog, Depends(get_auditor)]
 async def require_admin(
     session: SessionDep,
     x_admin_token: Annotated[str | None, Header(alias="X-Admin-Token")] = None,
+    admin_cookie: Annotated[str | None, Cookie(alias=IDP_ADMIN_COOKIE)] = None,
 ) -> None:
-    """Guard the admin surface with the bootstrap admin token (compared against its hash)."""
+    """Guard the admin surface with the bootstrap admin token (compared against its
+    hash) -- via the header (the raw API, scripts, curl) or the admin-console cookie
+    (the browser UI). Same credential, same check, either carrier."""
     stored = await MetaRepository(session).get(ADMIN_TOKEN_META_KEY)
-    if stored is None or not x_admin_token or not verify_password(stored, x_admin_token):
+    candidate = x_admin_token or admin_cookie
+    if stored is None or not candidate or not verify_password(stored, candidate):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid or missing admin token",

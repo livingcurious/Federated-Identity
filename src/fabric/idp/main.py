@@ -29,7 +29,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fabric.common.audit import configure_audit_logging
 from fabric.common.config import get_settings
 from fabric.common.database import create_all, make_engine, make_sessionmaker
-from fabric.idp.api import admin, auth_ui, oidc, token
+from fabric.idp.api import admin, admin_ui, auth_ui, oidc, token
 from fabric.idp.persistence.models import IdPBase
 
 
@@ -70,8 +70,13 @@ def create_internal_app() -> FastAPI:
     configure_audit_logging("idp")
     app = FastAPI(title="Identity Fabric — IdP (internal)", lifespan=_lifespan)
     app.add_middleware(BaseHTTPMiddleware, dispatch=_request_id_middleware)
+    # The browser admin console (admin_ui) renders templates that link /static/styles.css,
+    # so the internal app needs its own static mount — it does not share create_app()'s.
+    static_dir = Path(__file__).resolve().parent / "static"
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
     app.include_router(token.router)
     app.include_router(admin.router)
+    app.include_router(admin_ui.router)
     return app
 
 
