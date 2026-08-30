@@ -47,13 +47,22 @@ live on 2026-08-29 against the container deployment (hostnames resolved via curl
      `sid` (`crypto.new_opaque("sid_")`), `idle_expiry` = now+900s,
      `absolute_expiry` = now+28800s, `revoked=False`.
    - Audits `auth.login.succeeded` (NOTICE) with `subject=user-ada`, `sid`.
-   - `_resume_authorization()`: `OIDCFlowService.issue_authorization_code()` — re-checks
-     `redirect_uri`, mints `code` (`crypto.new_opaque("ac_")`), inserts an `AuthCodeRow`
-     binding `code ↔ client_id, subject, sid, redirect_uri, code_challenge, nonce`,
+   - `_resume_authorization()` — the group-authorization gate runs **first**, here:
+     `UserService.get_groups(sess_row.subject)` vs `client.authorized_groups` — if the
+     intersection is empty, this stops right here: renders `forbidden.html`, `403`, audits
+     `client.access.denied` (WARNING), and **no code is ever minted**. Ada is in
+     `engineering`, which SP-A authorizes, so this passes and continues to:
+     `OIDCFlowService.issue_authorization_code()` — re-checks `redirect_uri`, mints
+     `code` (`crypto.new_opaque("ac_")`), inserts an `AuthCodeRow` binding
+     `code ↔ client_id, subject, sid, redirect_uri, code_challenge, nonce`,
      `expires_at` = now+60s, `consumed=False`.
-   - Response: `303 See Other` → `http://sp-a:9401/callback?code=<code>&state=<state>`,
-     **with** `Set-Cookie: fabric_idp_sid=<sid>; HttpOnly; Path=/; SameSite=lax`
-     (`Secure` only if `FABRIC_COOKIE_SECURE=true`).
+   - Response: `303 See Other` → `http://sp-a:9401/callback?code=<code>&state=<state>`
+     (or the `403` above, on a denial) — **either way, with**
+     `Set-Cookie: fabric_idp_sid=<sid>; HttpOnly; Path=/; SameSite=lax`
+     (`Secure` only if `FABRIC_COOKIE_SECURE=true`): the cookie is set unconditionally by
+     the caller (`login()`), since the group gate is an authorization decision about
+     *this SP*, not an authentication failure — a denied user still gets their IdP-wide
+     SSO cookie to reach apps they're actually authorized for.
 
 4. **Browser → SP-A: `GET /callback?code=...&state=...`**
    (`sp/api/routes.py::callback`).
@@ -85,8 +94,11 @@ live on 2026-08-29 against the container deployment (hostnames resolved via curl
        compare). Any mismatch → `400 invalid_grant`.
      - Marks `consumed=True`, loads the user's profile, mints **two** JWTs with the
        IdP's active Ed25519 key: `id_token` (`aud=azp="sp-a"`, `sid`, `nonce` echoed,
-       `email`, `name`, `roles`, 300s TTL) and `access_token` (same claims minus
-       `nonce`/profile, plus `scope`, also 300s TTL).
+       `email`, `name`, 300s TTL) and `access_token` (same claims minus `nonce`/profile,
+       plus `scope`, also 300s TTL). **No `roles` claim** — roles are not an IdP concept
+       at all (see Flow 3/4's precondition note); the only IdP-internal authorization
+       input, `groups`, was already checked back in step 3 (before any code existed) and
+       never becomes a claim either.
      - Records that this `sid` reached `client_id=sp-a` (`SessionClientRow`) — this is
        what makes back-channel logout able to find SP-A later.
      - Returns `200` `{access_token, id_token, token_type: "Bearer", expires_in: 300}`,
@@ -98,10 +110,12 @@ live on 2026-08-29 against the container deployment (hostnames resolved via curl
      for the `id_token` specifically, `claims["nonce"] == <the nonce SP-A generated in
      step 1>` — this is what stops a token meant for a different login attempt from
      being injected here.
-   - `SPSessionService.create_from_claims()`: inserts an `SPSessionRow` in **SP-A's own
-     DB** — new `sid` (prefix `spsid_`), `subject`, `idp_sid` (links back to the IdP
-     session, used later for back-channel logout), `email`, `name`, `roles`, 900s
-     idle / 28800s absolute expiry.
+   - `SPSessionService.create_from_claims()`: `subject`, `idp_sid`, `email`, `name` come
+     straight from the verified claims above. `roles` does **not** — it's looked up from
+     this SP's own `SPUserRoleRow` table by `subject` (defaulting to, and writing
+     through, `["user"]` on a first-ever login here). Inserts the resulting
+     `SPSessionRow` in **SP-A's own DB** — new `sid` (prefix `spsid_`), 900s idle / 28800s
+     absolute expiry.
    - Response: `303 See Other` → `/profile`, **with**
      `Set-Cookie: fabric_sp_sp_a=<spsid>; HttpOnly; Path=/; SameSite=lax`.
 
@@ -129,10 +143,15 @@ GET  http://sp-a:9401/profile     -> 200  (shows "Ada Lovelace")
    regardless of which SP triggered the request). `SessionService.load_valid(sid)` finds
    the still-live `IdPSessionRow` (idle timeout slides again). Since a valid session
    exists, `authorize()` skips the login form entirely and calls `_resume_authorization()`
-   directly — mints a **new** `AuthCodeRow` (`client_id="sp-b"`, same `sid`, SP-B's own
-   `code_challenge`/`nonce`) and returns `303` straight to
-   `http://sp-b:9402/callback?code=...&state=...`. **The password was never asked for a
-   second time.**
+   directly — which runs the **exact same group-authorization gate** as step 3, now
+   checked against `client_id="sp-b"`'s `authorized_groups` instead of SP-A's (Ada is
+   still in `engineering`, still authorized, so it passes again) — then mints a **new**
+   `AuthCodeRow` (`client_id="sp-b"`, same `sid`, SP-B's own `code_challenge`/`nonce`) and
+   returns `303` straight to `http://sp-b:9402/callback?code=...&state=...`. **The
+   password was never asked for a second time.** (Had Ada's group *not* been authorized
+   at SP-B, this exact step is where she'd get a `403` instead — see Flow 1's README
+   cross-reference on the group gate; this is the same mechanism, just resuming an
+   existing session instead of a fresh login.)
 
 8. **Browser → SP-B: `GET /callback`, `GET /profile`.** Identical mechanics to steps 4–5,
    scoped to SP-B: its own `private_key_jwt` assertion (SP-B's own key, never SP-A's),

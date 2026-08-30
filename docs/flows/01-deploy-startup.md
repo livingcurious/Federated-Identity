@@ -43,17 +43,25 @@ exactly as verified live on 2026-08-29.
    4. `_seed_admin()` — if `meta["admin_token_hash"]` is unset, generates a random opaque
       token (`crypto.new_opaque("adm_")`, 256 bits), stores **only its Argon2 hash**,
       returns the plaintext once (never persisted in plaintext anywhere).
-   5. `_seed_users()` — if the `users` table is empty, inserts the 5 seeded identities
-      (`ada`, `grace`/admin, `alan`, `marie`, `linus`), each with an Argon2id
-      `password_hash`.
+   5. `_seed_users()` — if the `users` table is empty, inserts the 6 seeded identities
+      (`ada`, `grace`, `alan`, `marie`, `linus`, `diana`), each with an Argon2id
+      `password_hash` and an IdP-level **group** (`engineering`, `finance-dept`, or
+      `hr-dept` — see `DESIGN.md` §5.8). No roles are seeded at the IdP at all anymore —
+      `UserRow` has no `roles` column; roles are entirely SP-local (next step).
    6. `_seed_sp_pair()` for each of `sp-a`, `sp-b`: if that SP has no `SPClientKeyRow` in
       its **own** DB yet, generates an Ed25519 keypair there (private half stays in that
       SP's DB, never touches `idp.db`); either way, **upserts** the `ClientRow` in
       `idp.db` with the SP's current public key + config-derived metadata
       (`redirect_uri`, `post_logout_redirect_uri`, `backchannel_logout_uri`,
       `display_name`) — this metadata refresh happens on every run, so a port/URL change
-      in config takes effect without wiping data. `key_revoked` is **not** touched on
-      upsert, so a previously-revoked SP key stays revoked across reseeds.
+      in config takes effect without wiping data. `key_revoked` and `authorized_groups`
+      are **not** touched on upsert (only set once, at first creation) — a previously
+      revoked SP key, or a group grant/revoke an admin made, both survive a reseed.
+   6b. `_seed_local_roles()`, right after, per SP: if that SP's `user_roles` table is
+      still empty, writes its seeded local role assignments (e.g. `grace → admin` at
+      SP-A but `grace → user` at SP-B — see `DESIGN.md` §5.8 on role decoupling).
+      Idempotent by checking for *any* existing row, so it never clobbers an HR-panel
+      edit made after the first boot.
    7. Prints the bootstrap report (issuer, active kid, SP URLs, seeded users, the
       one-time admin token) to stdout.
 4. **Ready.** IdP public UI at `http://127.0.0.1:9400`, IdP internal (`/token`,

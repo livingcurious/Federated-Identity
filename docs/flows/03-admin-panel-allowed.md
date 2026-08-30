@@ -1,8 +1,11 @@
 # Flow 3 — SP Admin Panel, Allowed (Grace, has the `admin` role)
 
 Precondition: Grace has already completed Flow 2 (login) at SP-A. She has a valid
-`fabric_sp_sp_a` cookie and her `SPSessionRow.roles == ["user", "admin"]` (copied
-verbatim from the `id_token`'s `roles` claim at login time — see Flow 2 step 4).
+`fabric_sp_sp_a` cookie and her `SPSessionRow.roles == ["admin"]` — looked up from
+**SP-A's own** `SPUserRoleRow` table by subject at login time (see Flow 2 step 5), not
+from any IdP claim. This is seeded per-SP in `seed.py::_SEED_LOCAL_ROLES["sp-a"]`; her
+role at SP-B is seeded independently and differently (`["user"]` — see Flow 4's
+container-verification note on role decoupling).
 
 ## Step-by-step
 
