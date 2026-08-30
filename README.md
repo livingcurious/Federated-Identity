@@ -3,8 +3,7 @@
 A small, security-serious **Single Sign-On** trust fabric: one **Identity Provider (IdP)**
 that two **Service Providers (SP-A, SP-B)** trust to identify a user. OpenID Connect
 Authorization Code + PKCE, **private_key_jwt** client authentication, **Ed25519** JWKS
-signing. Full architecture in [`DESIGN.md`](./DESIGN.md); the detailed request-by-request
-flow write-ups are in [`docs/flows/`](./docs/flows/).
+signing.
 
 > Not a production identity system: users and SPs are seeded, and the default run is over
 > `localhost` HTTP. A faithful, working model of the security mechanics — see the threat
