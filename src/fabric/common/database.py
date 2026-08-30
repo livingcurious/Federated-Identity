@@ -13,12 +13,26 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import StaticPool
 
 
 def make_engine(db_path: Path) -> AsyncEngine:
-    """Create an aiosqlite engine for ``db_path`` (parent dir is created if missing)."""
+    """Create an aiosqlite engine for ``db_path`` (parent dir is created if missing).
+
+    ``StaticPool`` forces every checkout onto the *same* single connection instead of
+    SQLAlchemy's default multi-connection pool. Without it, a write committed on one
+    pooled connection is not guaranteed to be visible to the very next request if it
+    happens to be handed a different pooled connection — a real, observed race (a
+    just-revoked session still looking "active" for one more request before
+    self-correcting). One SQLite file has no use for more than one writer anyway.
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    return create_async_engine(f"sqlite+aiosqlite:///{db_path}", future=True)
+    return create_async_engine(
+        f"sqlite+aiosqlite:///{db_path}",
+        future=True,
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
 
 
 def make_sessionmaker(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

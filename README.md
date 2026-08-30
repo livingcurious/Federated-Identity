@@ -111,6 +111,17 @@ lifecycle and persistence.
   at bootstrap, with no runtime mutator. Granting or revoking a whole group's access to
   an SP is live and immediate for anyone already signed in; moving one specific person
   into a different group is not possible without a reseed.
+- **A way to run this without a manual, root-privileged edit to the host's `/etc/hosts`**
+  — not built. The browser has to resolve `idp`/`sp-a`/`sp-b` to loopback, and
+  `container-start.sh` deliberately only checks for that and tells you the exact
+  command — it never edits the file itself, since that's a system-wide change outside
+  this project's own footprint, needing `sudo`. It's also not just inconvenience:
+  using distinct hostnames instead of `localhost` on three different ports is what
+  makes `SameSite=Lax` a real cross-site boundary here (see the CSRF row above) —
+  collapsing everything onto `localhost` to avoid the hosts-file edit would quietly
+  undo that. So the manual step is a direct consequence of a security choice, not an
+  arbitrary one, but it's still the one part of setup that reaches past this project's
+  own isolation and onto shared host state.
 
 ---
 

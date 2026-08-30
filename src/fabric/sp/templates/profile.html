@@ -26,6 +26,7 @@
       {% if is_admin %}<p>→ <a href="/admin">Admin panel</a></p>{% endif %}
       {% if is_finance %}<p>→ <a href="/finance">Finance</a></p>{% endif %}
       {% if is_hr %}<p>→ <a href="/hr">HR</a></p>{% endif %}
+      <p><a href="/logout-local">Sign out of {{ app.display_name }} only</a></p>
       <p><a href="/logout">Sign out everywhere</a></p>
     </div>
   </main>

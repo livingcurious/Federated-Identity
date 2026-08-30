@@ -11,8 +11,8 @@
     <div class="brand"><span class="dot"></span><h1>{{ app.display_name }}</h1></div>
     <p class="sub">HR panel — visible and reachable only to the <code>hr</code> role.
       Roles here are entirely local to this SP — the IdP has no idea they exist.
-      The <code>hr</code> role cannot grant <code>admin</code>, and cannot assign
-      itself a role.</p>
+      The <code>hr</code> role cannot grant <code>admin</code>, cannot assign itself a
+      role, and can only grant a role it already holds.</p>
 
     <h2>Local role assignments ({{ assignments|length }})</h2>
     <dl class="claims">

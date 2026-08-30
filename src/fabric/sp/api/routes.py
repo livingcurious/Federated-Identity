@@ -278,11 +278,13 @@ async def hr_panel(
     result = await _require_role(request, session, settings, audit, role=HR_ROLE, action_path="/hr")
     if isinstance(result, Response):
         return result
+    user = result
     assignments = await SPUserRoleRepository(session).all()
+    grantable = tuple(r for r in GRANTABLE_BY_HR if r in user.roles)
     return _TEMPLATES.TemplateResponse(
         request,
         "hr.html",
-        {"app": _me(settings), "assignments": assignments, "grantable_roles": GRANTABLE_BY_HR},
+        {"app": _me(settings), "assignments": assignments, "grantable_roles": grantable},
     )
 
 
@@ -308,7 +310,14 @@ async def hr_assign_role(
             {"app": _me(settings), "message": f"'{role}' is not a recognized role."},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
-    if role not in GRANTABLE_BY_HR or subject == user.sub:
+    if role not in GRANTABLE_BY_HR or subject == user.sub or role not in user.roles:
+        reason = (
+            "hr cannot grant admin"
+            if role not in GRANTABLE_BY_HR
+            else "cannot assign roles to itself"
+            if subject == user.sub
+            else "can only assign a role you already hold"
+        )
         await audit.record(
             Event.SP_ACCESS_DENIED,
             Severity.WARNING,
@@ -316,18 +325,16 @@ async def hr_assign_role(
             outcome="denied",
             detail={
                 "path": "/hr/assign-role",
-                "reason": "hr cannot grant admin, and cannot assign roles to itself",
+                "reason": reason,
                 "target_subject": subject,
                 "requested_role": role,
+                "granter_roles": user.roles,
             },
         )
         return _TEMPLATES.TemplateResponse(
             request,
             "forbidden.html",
-            {
-                "app": _me(settings),
-                "message": "The hr role cannot grant admin, and cannot assign roles to itself.",
-            },
+            {"app": _me(settings), "message": f"Not allowed: {reason}."},
             status_code=status.HTTP_403_FORBIDDEN,
         )
     roles_repo = SPUserRoleRepository(session)
@@ -359,6 +366,25 @@ async def logout(request: Request, session: SessionDep, settings: SettingsDep) -
     )
     target = f"{settings.idp_issuer}/logout?{query}"
     response = RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+    _clear_cookie(response, settings)
+    return response
+
+
+@router.get("/logout-local")
+async def logout_local(
+    request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
+) -> Response:
+    """Sign out of *this SP only*. Unlike ``/logout``, this never contacts the IdP: the
+    IdP-wide SSO session (and every other SP it reached) is left untouched, so signing
+    back in here won't need a password if that session is still valid elsewhere."""
+    sessions = SPSessionService(session, settings)
+    sess = await sessions.load_valid(request.cookies.get(sp_cookie_name(settings)))
+    if sess is not None:
+        await sessions.revoke(sess.sid)
+        await audit.record(
+            Event.SP_LOCAL_LOGOUT, Severity.NOTICE, subject=sess.subject, outcome="revoked"
+        )
+    response = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
     _clear_cookie(response, settings)
     return response
 

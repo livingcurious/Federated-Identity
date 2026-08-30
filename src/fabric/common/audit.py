@@ -59,6 +59,7 @@ class Event:
     # SP
     SP_LOGIN_SUCCEEDED = "sp.login.succeeded"
     SP_LOGIN_FAILED = "sp.login.failed"
+    SP_LOCAL_LOGOUT = "sp.logout.local"
     SP_JWKS_REFRESHED = "sp.jwks.refreshed"
     SP_BACKCHANNEL_RECEIVED = "sp.backchannel.received"
     SP_BACKCHANNEL_REJECTED = "sp.backchannel.rejected"
