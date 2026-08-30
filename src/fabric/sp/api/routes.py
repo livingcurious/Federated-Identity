@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlencode
 
+import httpx
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -234,6 +235,86 @@ async def admin_revoke_all(
     return RedirectResponse(url="/admin", status_code=status.HTTP_303_SEE_OTHER)
 
 
+@router.get("/admin/isolation-check")
+async def admin_isolation_check(
+    request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
+) -> Response:
+    """Prove the container-level isolation this project claims, instead of just
+    asserting it: from inside *this* SP's own container, try to read the other SP's
+    database file directly off disk, and try to reach the other SP's address over the
+    network. Both are expected to fail -- that failure, observed live, is the proof.
+
+    Deliberately not a general "run a command" admin feature: that would hand
+    whoever holds (or steals) this role arbitrary code execution inside the
+    container, which is a far worse outcome than anything this check is trying to
+    demonstrate. This only ever does these two fixed, read-only probes.
+    """
+    result = await _require_role(
+        request, session, settings, audit, role=ADMIN_ROLE, action_path="/admin/isolation-check"
+    )
+    if isinstance(result, Response):
+        return result
+    user = result
+
+    other = _others(settings)[0]
+    checks: list[dict[str, Any]] = []
+
+    other_db_path = settings.sp_db_path(other.client_id)
+    try:
+        other_db_path.stat()
+        checks.append(
+            {
+                "check": "Read the other SP's database file directly",
+                "target": str(other_db_path),
+                "isolated": False,
+                "detail": "the file is visible from here -- isolation FAILED",
+            }
+        )
+    except OSError as exc:
+        checks.append(
+            {
+                "check": "Read the other SP's database file directly",
+                "target": str(other_db_path),
+                "isolated": True,
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            await client.get(other.base_url)
+        checks.append(
+            {
+                "check": "Reach the other SP over the network",
+                "target": other.base_url,
+                "isolated": False,
+                "detail": "the connection succeeded -- isolation FAILED",
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - any connection failure is the expected, good outcome
+        checks.append(
+            {
+                "check": "Reach the other SP over the network",
+                "target": other.base_url,
+                "isolated": True,
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
+    await audit.record(
+        Event.SP_ADMIN_ISOLATION_CHECKED,
+        Severity.NOTICE,
+        subject=user.sub,
+        outcome="checked",
+        detail={"other": other.client_id, "checks": checks},
+    )
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "isolation_check.html",
+        {"app": _me(settings), "other": other, "checks": checks},
+    )
+
+
 @router.get("/finance")
 async def finance_panel(
     request: Request, session: SessionDep, settings: SettingsDep, audit: AuditDep
@@ -280,11 +361,19 @@ async def hr_panel(
         return result
     user = result
     assignments = await SPUserRoleRepository(session).all()
+    # Same eligible set both ways: you can only touch (grant or take away) a role you
+    # hold yourself.
     grantable = tuple(r for r in GRANTABLE_BY_HR if r in user.roles)
+    revokable = tuple(r for r in KNOWN_ROLES if r in user.roles)
     return _TEMPLATES.TemplateResponse(
         request,
         "hr.html",
-        {"app": _me(settings), "assignments": assignments, "grantable_roles": grantable},
+        {
+            "app": _me(settings),
+            "assignments": assignments,
+            "grantable_roles": grantable,
+            "revokable_roles": revokable,
+        },
     )
 
 
@@ -348,6 +437,67 @@ async def hr_assign_role(
         subject=subject,
         outcome="assigned",
         detail={"role": role, "roles": merged_roles},
+    )
+    return RedirectResponse(url="/hr", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/hr/revoke-role")
+async def hr_revoke_role(
+    request: Request,
+    session: SessionDep,
+    settings: SettingsDep,
+    audit: AuditDep,
+    subject: Annotated[str, Form()],
+    role: Annotated[str, Form()],
+) -> Response:
+    result = await _require_role(
+        request, session, settings, audit, role=HR_ROLE, action_path="/hr/revoke-role"
+    )
+    if isinstance(result, Response):
+        return result
+    user = result
+    if role not in KNOWN_ROLES:
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "forbidden.html",
+            {"app": _me(settings), "message": f"'{role}' is not a recognized role."},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    if role not in user.roles:
+        # Same principle as assign, mirrored: you can't touch a role you don't hold
+        # yourself, in either direction. Unlike assign, self-targeting is fine here --
+        # giving up your own role isn't a privilege escalation.
+        reason = "can only revoke a role you already hold"
+        await audit.record(
+            Event.SP_ACCESS_DENIED,
+            Severity.WARNING,
+            subject=user.sub,
+            outcome="denied",
+            detail={
+                "path": "/hr/revoke-role",
+                "reason": reason,
+                "target_subject": subject,
+                "requested_role": role,
+                "granter_roles": user.roles,
+            },
+        )
+        return _TEMPLATES.TemplateResponse(
+            request,
+            "forbidden.html",
+            {"app": _me(settings), "message": f"Not allowed: {reason}."},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    roles_repo = SPUserRoleRepository(session)
+    existing = await roles_repo.get(subject)
+    remaining_roles = sorted({r for r in (existing.roles if existing else []) if r != role})
+    await roles_repo.upsert(subject, remaining_roles)
+    await audit.record(
+        Event.SP_HR_ROLE_REVOKED,
+        Severity.ALERT,
+        actor=user.sub,
+        subject=subject,
+        outcome="revoked",
+        detail={"role": role, "roles": remaining_roles},
     )
     return RedirectResponse(url="/hr", status_code=status.HTTP_303_SEE_OTHER)
 

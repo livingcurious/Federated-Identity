@@ -65,8 +65,10 @@ class Event:
     SP_BACKCHANNEL_REJECTED = "sp.backchannel.rejected"
     SP_ACCESS_DENIED = "sp.access.denied"
     SP_ADMIN_SESSIONS_REVOKED = "sp.admin.sessions_revoked"
+    SP_ADMIN_ISOLATION_CHECKED = "sp.admin.isolation_checked"
     SP_FINANCE_BUDGET_APPROVED = "sp.finance.budget_approved"
     SP_HR_ROLE_ASSIGNED = "sp.hr.role_assigned"
+    SP_HR_ROLE_REVOKED = "sp.hr.role_revoked"
 
 
 # --------------------------------------------------------------------------- #

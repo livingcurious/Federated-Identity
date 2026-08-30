@@ -12,7 +12,7 @@
     <p class="sub">HR panel — visible and reachable only to the <code>hr</code> role.
       Roles here are entirely local to this SP — the IdP has no idea they exist.
       The <code>hr</code> role cannot grant <code>admin</code>, cannot assign itself a
-      role, and can only grant a role it already holds.</p>
+      role, and can only grant or revoke a role it already holds.</p>
 
     <h2>Local role assignments ({{ assignments|length }})</h2>
     <dl class="claims">
@@ -34,6 +34,18 @@
       </select>
 
       <button type="submit">Assign role</button>
+    </form>
+
+    <form method="post" action="/hr/revoke-role">
+      <label for="revoke-subject">Subject</label>
+      <input id="revoke-subject" name="subject" type="text" required placeholder="user-alan" />
+
+      <label for="revoke-role">Role</label>
+      <select id="revoke-role" name="role">
+        {% for r in revokable_roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
+      </select>
+
+      <button type="submit">Revoke role</button>
     </form>
 
     <div class="links"><p><a href="/profile">Back to profile</a></p></div>

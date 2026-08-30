@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Isolation check · {{ app.display_name }}</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="card">
+    <div class="brand"><span class="dot"></span><h1>{{ app.display_name }}</h1></div>
+    <p class="sub">Two live probes, run just now from inside this SP's own container,
+      against <b>{{ other.display_name }}</b> ({{ other.client_id }}). Each is expected
+      to fail — that failure is the actual proof of isolation, not a claim about it.
+      This is a fixed pair of read-only checks, not a general command-runner: giving
+      admin the ability to run arbitrary commands would itself be a far bigger risk
+      than anything being demonstrated here.</p>
+
+    <dl class="claims">
+      {% for c in checks %}
+      <dt>{{ c.check }}</dt>
+      <dd>
+        <span class="pill">{{ "ISOLATED" if c.isolated else "NOT ISOLATED" }}</span>
+        target: <code>{{ c.target }}</code><br />
+        {{ c.detail }}
+      </dd>
+      {% endfor %}
+    </dl>
+
+    <div class="links"><p><a href="/admin">Back to admin panel</a></p></div>
+  </main>
+</body>
+</html>
