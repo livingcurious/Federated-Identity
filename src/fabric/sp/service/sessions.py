@@ -23,9 +23,9 @@ class SPSessionService:
 
     async def create_from_claims(self, claims: dict[str, Any]) -> SPSessionRow:
         subject = str(claims["sub"])
-        # Roles are entirely local to this SP — never asserted by the IdP (see
-        # DESIGN.md's role-decoupling rationale). First-ever login here gets the
-        # default role, written through so the HR panel's roster is always complete.
+        # Roles are entirely local to this SP — never asserted by the IdP. First-ever
+        # login here gets the default role, written through so the HR panel's roster
+        # is always complete.
         # Atomic (get_or_create_default), not check-then-insert: two concurrent
         # first-logins for the same subject must not race each other.
         role_row = await self._roles.get_or_create_default(subject, ["user"])

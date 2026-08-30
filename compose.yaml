@@ -66,7 +66,7 @@ services:
   # it is reachable only from sp-a/sp-b over the compose network (`idp-internal:9410`),
   # or from the host via `podman compose exec idp-internal curl ...`. A stolen SP
   # private_key_jwt key or a leaked admin token is only useful to whoever can reach this
-  # listener, and this is the lever that makes that actually true (see DESIGN.md §10).
+  # listener, and this is the lever that makes that actually true.
   idp-internal:
     <<: *image
     environment: *env
