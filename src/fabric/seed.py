@@ -60,12 +60,14 @@ _SEED_LOCAL_ROLES: dict[str, dict[str, list[str]]] = {
 }
 
 
-async def _seed_admin(session: AsyncSession) -> str | None:
+async def _seed_admin(session: AsyncSession, settings: Settings) -> str | None:
     meta = MetaRepository(session)
+    token_file = settings.idp_db_path.parent / "admin_token.txt"
     if await meta.get(ADMIN_TOKEN_META_KEY) is not None:
-        return None
+        return token_file.read_text().strip() if token_file.exists() else None
     token = crypto.new_opaque("adm_")
     await meta.set(ADMIN_TOKEN_META_KEY, hash_password(token))
+    token_file.write_text(token + "\n")
     return token
 
 
@@ -154,7 +156,7 @@ async def seed_all() -> None:
     try:
         async with idp_maker() as idp_session:
             active_kid = await KeyService(idp_session).ensure_active_key()
-            admin_token = await _seed_admin(idp_session)
+            admin_token = await _seed_admin(idp_session, settings)
             seeded_users = await _seed_users(idp_session)
             for client_id in settings.sp_clients():
                 sp_maker = make_sessionmaker(sp_engines[client_id])
@@ -189,7 +191,7 @@ def _report(
     else:
         print("Users             : already present (not reseeded)")
     if admin_token is not None:
-        print("Admin token (SHOWN ONCE — use header 'X-Admin-Token'):")
+        print("Admin token (saved to data/admin_token.txt — use header 'X-Admin-Token'):")
         print(f"  {admin_token}")
     else:
         print("Admin token       : already provisioned (hash on file; not reshown)")
