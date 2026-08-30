@@ -169,9 +169,9 @@ GET http://sp-b:9402/profile      -> 200  (shows "ada@example.com", no password 
 
 ## Cross-SP integrity (why SP-A's token is useless at SP-B)
 
-Replicated the exact check `scripts/demo.py` performs (had to run it *inside* the sp-a
-container rather than from the host — see Flow 1, Finding 2): mint a real `id_token` for
-SP-A using SP-A's genuine private key, then verify it twice —
+Verified by running this inside the sp-a container (needs SP-A's real private key, which
+only that container has): mint a real `id_token` for SP-A using SP-A's genuine private
+key, then verify it twice —
 ```
 verify(token, issuer="http://idp:9400", audience="sp-a")  -> succeeds
 verify(token, issuer="http://idp:9400", audience="sp-b")  -> InvalidClaimError (rejected)

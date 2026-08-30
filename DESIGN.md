@@ -33,35 +33,43 @@ layer.
 
 ## 2. Topology
 
-```
-                         ┌─────────────────────────────┐
-                         │            IdP               │
-                         │        localhost:9400        │
-        (1) login UI ───▶│  /authorize  /login  /token  │
-                         │  /.well-known/jwks.json      │
-                         │  /.well-known/openid-config  │
-                         │  /admin/keys  /admin/sessions│
-                         │  /logout  (+ back-channel)   │
-                         │        idp.db (SQLite)       │
-                         └──────────┬──────────┬────────┘
-                     JWKS / token   │          │  JWKS / token
-                    exchange (mTLS- │          │  exchange
-                    like via signed │          │
-                    client assert)  │          │
-                ┌──────────────────▼──┐   ┌───▼──────────────────┐
-                │        SP-A          │   │        SP-B          │
-                │   localhost:9401     │   │   localhost:9402     │
-                │  /login /callback    │   │  /login /callback    │
-                │  /logout /profile    │   │  /logout /profile    │
-                │  /backchannel-logout │   │  /backchannel-logout │
-                │   sp_a.db (SQLite)   │   │   sp_b.db (SQLite)   │
-                └──────────────────────┘   └──────────────────────┘
+```mermaid
+graph TB
+    Browser["Browser"]
+
+    subgraph IdP
+        IdPPub["Public app :9400<br/>/authorize /login /logout<br/>/.well-known/*"]
+        IdPInt["Internal app :9410<br/>/token /admin/*"]
+        IdPDB[("idp.db")]
+    end
+
+    subgraph "SP-A"
+        SPA["SP-A :9401<br/>/login /callback /profile<br/>/admin /finance /hr"]
+        SPADB[("sp_a.db")]
+    end
+
+    subgraph "SP-B"
+        SPB["SP-B :9402<br/>/login /callback /profile"]
+        SPBDB[("sp_b.db")]
+    end
+
+    Browser -->|login UI, SSO cookie| IdPPub
+    Browser -->|session cookie| SPA
+    Browser -->|session cookie| SPB
+    SPA -->|private_key_jwt, code exchange| IdPInt
+    SPB -->|private_key_jwt, code exchange| IdPInt
+    IdPPub --- IdPDB
+    IdPInt --- IdPDB
+    SPA --- SPADB
+    SPB --- SPBDB
 ```
 
 Each service is an independent FastAPI app with its **own** SQLite database. There is no
-shared datastore. Whether that separation is merely *logical* or actually *enforced*
-depends on how it is run — see [§10, Deployment & isolation](#10-deployment--isolation),
-which is a first-class part of the containment story, not an afterthought.
+shared datastore. The IdP itself is two processes — a public one (login UI, `/authorize`,
+JWKS/discovery) and an internal one (`/token`, `/admin/*`) — see §5.7. Whether the
+per-service separation is merely *logical* or actually *enforced* depends on how it is
+run — see [§10, Deployment & isolation](#10-deployment--isolation), which is a
+first-class part of the containment story, not an afterthought.
 
 ---
 
@@ -127,7 +135,7 @@ it and gets its **own** token with `aud = "sp-b"`. One password entry, two sessi
 - Tokens are **audience-bound**: `aud` and `azp` name exactly one SP.
 - Each SP verifies `aud == <its own client_id>`. A token minted for SP-A presented at
   SP-B fails the audience check → **rejected**. This defeats token-confusion / replay
-  across SPs. `scripts/demo.py` exercises exactly this and asserts the rejection.
+  across SPs. Verified live against the container deployment — see `docs/flows/02-login-sso.md`.
 
 ### 5.4 Compromise containment
 - **Key compromise (IdP):** `POST /admin/keys/{kid}/revoke` sets a key to `revoked` and
@@ -202,7 +210,7 @@ about the peer address first.
 `private_key_jwt` and the admin token are both purely credential-based: nothing in
 `ClientService.authenticate` or `require_admin` checks *where* a request came from, only
 *what it can prove*. That means container network segmentation between SP-A and SP-B
-(§10.2) never protected the token/admin surface in the first place — a leaked SP key or
+(§10.1) never protected the token/admin surface in the first place — a leaked SP key or
 admin token is exactly as usable from outside the segmented topology as from inside it,
 because the IdP's port was published straight to the host.
 
@@ -251,7 +259,7 @@ rejects it with a specific error rather than a low-level crypto failure) and
 `authorized_groups=[]`. The existing `register-key` endpoint (§5.4) doubles as the
 "complete registration" step with no changes needed. This mirrors how a real IdP
 onboards an app — create it, get pending credentials, submit the key — as an explicit,
-auditable admin action instead of only the automatic seed-time script (§10.3's "trusted
+auditable admin action instead of only the automatic seed-time script (§10.2's "trusted
 provisioner").
 
 ---
@@ -340,9 +348,6 @@ src/fabric/
                   admin/finance/hr — role-gated, §5.8)
     service/      idp_client (discovery + JWKS cache), login, sessions (local role lookup)
     persistence/  ORM models (+audit_events) + async repositories        →  sp_a.db / sp_b.db
-run.py                    seed + launch IdP (public+internal) + SP-A + SP-B (local processes)
-start.sh                  one command: venv + install + run.py
-scripts/demo.py           scripted end-to-end proof (SSO + cross-SP rejection)
 scripts/rotate_sp_key.py  SP-key-compromise recovery (§5.4): fresh keypair, that SP's DB only
 Containerfile             single image for all roles
 compose.yaml              isolated Docker/Podman topology (provisioner + segmented services
@@ -355,19 +360,11 @@ podman-start.sh           /etc/hosts check + `podman compose up --build` (Podman
 
 ## 10. Deployment & Isolation
 
-The fabric runs in two modes. The security-relevant difference is whether the per-service
-separation is merely *logical* or *enforced by the runtime*.
+This is a container-only project — there is no local-process run mode. Every
+per-service separation described below is *enforced by the runtime*, not just logical.
 
-### 10.1 Local processes (default — for development)
-`run.py` / `start.sh` launch four `uvicorn` processes (public IdP, internal IdP, SP-A,
-SP-B) under one OS user, reading three SQLite files from one `data/` directory. Fast to
-iterate, but the boundary is logical only: code execution in one SP could read the
-sibling DBs and the IdP's user/key store off the shared filesystem, and there is no
-network separation between the public and internal IdP either. Fine for development;
-**not** a containment claim.
-
-### 10.2 Containers (Podman/Docker — enforced isolation)
-`compose.yaml` turns the logical separation into an enforced one along three axes:
+### 10.1 Containers (Podman/Docker — enforced isolation)
+`compose.yaml` enforces the per-service separation along three axes:
 
 - **Filesystem** — each server mounts **only its own volume**. `idp.db` and the sibling
   SP's DB are not on any path a compromised SP can open.
@@ -383,7 +380,7 @@ network separation between the public and internal IdP either. Fine for developm
 This is the deployment realization of the compromise-containment goal in §5.4: a popped SP
 is boxed into its own volume and network segment.
 
-### 10.3 Seeding under isolation — the "trusted provisioner" (Option A)
+### 10.2 Seeding under isolation — the "trusted provisioner" (Option A)
 Seeding writes to *all three* databases, which is exactly the cross-volume access the
 runtime forbids. We resolve this with a **one-shot provisioner container** that mounts all
 three volumes, runs `fabric.seed`, prints the one-time admin token, and exits **before**
@@ -396,16 +393,16 @@ ever holds more than one volume.
 > architecturally pure (no component ever touches two volumes, even at bootstrap) at the
 > cost of a registration protocol and trust-on-first-use handling.
 
-### 10.4 Hostname model
-Tokens and the browser must agree on names, so both modes use the *same* issuer/base
-string everywhere. Locally that is `127.0.0.1:<port>`. Under containers, services are
-reached by name (`idp`, `idp-internal`, `sp-a`, `sp-b`) — resolvable inside the pod networks via container
-DNS and on the host via a single `/etc/hosts` entry (`127.0.0.1 idp sp-a sp-b`). This
-keeps `iss` identical for the browser redirect path and the server-to-server calls, so no
-internal/external issuer split is needed. Config exposes per-service host and per-database
-overrides (`FABRIC_SP_A_HOST`, `FABRIC_IDP_DB_FILE`, …) to make this possible.
+### 10.3 Hostname model
+Tokens and the browser must agree on names, so the *same* issuer/base string is used
+everywhere. Services are reached by name (`idp`, `idp-internal`, `sp-a`, `sp-b`) —
+resolvable inside the pod networks via container DNS and on the host via a single
+`/etc/hosts` entry (`127.0.0.1 idp sp-a sp-b`). This keeps `iss` identical for the
+browser redirect path and the server-to-server calls, so no internal/external issuer
+split is needed. Config exposes per-service host and per-database overrides
+(`FABRIC_SP_A_HOST`, `FABRIC_IDP_DB_FILE`, …) to make this possible.
 
-### 10.5 What containers do and do not buy
+### 10.4 What containers do and do not buy
 They contain **ordinary app-level compromise** — RCE that reads the filesystem or moves
 laterally over the network — which is the realistic "SP got popped" case. They are **not**
 a boundary against a **kernel/container-escape 0-day**; that tier needs separate VMs or

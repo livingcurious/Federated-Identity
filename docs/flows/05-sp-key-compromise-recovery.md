@@ -56,8 +56,7 @@ error shown: token endpoint rejected the exchange: client key has been revoked
 
 ## Step 3 — Recover: generate a fresh keypair, touching only SP-A's own database
 
-**As documented (local mode, or containers if `Containerfile` is amended — see the note
-below):** `python scripts/rotate_sp_key.py sp-a`.
+**As documented:** `docker compose exec sp-a python scripts/rotate_sp_key.py sp-a`.
 
 `scripts/rotate_sp_key.py::rotate("sp-a")`:
 1. Opens **only** `settings.sp_db_path("sp-a")` — never `idp.db`. Under containers this

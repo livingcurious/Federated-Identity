@@ -1,78 +1,9 @@
 # Flow 1 — Deploy / Startup
 
-Two independent run modes exist (`DESIGN.md` §10). Both are covered below, step by step,
-exactly as verified live on 2026-08-29.
+This is a container-only project (`DESIGN.md` §10) — there is no local-process run mode.
+Covered below, step by step, as verified live on 2026-08-29.
 
-## 1A. Local processes (`start.sh` / `run.py`)
-
-**Preconditions:** Python 3.11+, no other process already bound to 9400/9401/9402/9410.
-
-1. `./start.sh` runs:
-   1. Creates `.venv` if missing (`python3 -m venv .venv`).
-   2. Activates it, `pip install --quiet -e .` (installs the `fabric` package in editable
-      mode from `src/`, plus its dependencies: fastapi, uvicorn, sqlalchemy, aiosqlite,
-      joserfc, argon2-cffi, httpx, jinja2, pydantic(-settings), python-multipart).
-   3. `exec python run.py`.
-2. `run.py::main()`:
-   1. `get_settings()` loads `Settings` (pydantic-settings) — reads `FABRIC_*` env vars /
-      `.env`, otherwise the built-in defaults (`idp_host=127.0.0.1`, `idp_port=9400`,
-      `idp_internal_port=9410`, `sp_a_port=9401`, `sp_b_port=9402`, ...).
-   2. `asyncio.run(seed_all())` — see step 3 below. This runs **synchronously**, in the
-      parent process, before any server starts.
-   3. Spawns **four** `subprocess.Popen` uvicorn processes, each with
-      `--forwarded-allow-ips ""` (disables uvicorn's own default trust of
-      `X-Forwarded-For` from `127.0.0.1` — see Flow 1's "Findings" below and
-      `common/audit.py`):
-      - `fabric.idp.main:app` on `idp_port` (9400) — the **public** IdP surface.
-      - `fabric.idp.main:internal_app` on `idp_internal_port` (9410) — **internal**
-        (`/token`, `/admin/*`).
-      - `fabric.sp.main:app` on `sp_a_port` (9401), env `FABRIC_SP_ID=sp-a`.
-      - `fabric.sp.main:app` on `sp_b_port` (9402), env `FABRIC_SP_ID=sp-b`.
-   4. Prints the four endpoint URLs, then polls `proc.poll()` on each process every 1s
-      until Ctrl+C, at which point it sends `SIGINT` to all four and waits (5s timeout,
-      then `SIGKILL`) for clean shutdown.
-3. `fabric.seed.seed_all()` (runs once, in step 2.2 above):
-   1. `settings.data_dir.mkdir(parents=True, exist_ok=True)` — creates `./data/`.
-   2. Opens (creating if absent) `idp.db`, `sp_a.db`, `sp_b.db` via
-      `common.database.make_engine` + `create_all(engine, <Base>)`. **`create_all` only
-      creates tables that don't exist yet — it never alters an existing table's
-      columns.** (See Finding 1 below — this bit a real test run today.)
-   3. `KeyService(idp_session).ensure_active_key()` — if no `SigningKeyRow` has
-      `status="active"`, generates one Ed25519 keypair (`crypto.generate_signing_key`),
-      stores both halves (public + private JWK) in `idp.db`.
-   4. `_seed_admin()` — if `meta["admin_token_hash"]` is unset, generates a random opaque
-      token (`crypto.new_opaque("adm_")`, 256 bits), stores **only its Argon2 hash**,
-      returns the plaintext once (never persisted in plaintext anywhere).
-   5. `_seed_users()` — if the `users` table is empty, inserts the 6 seeded identities
-      (`ada`, `grace`, `alan`, `marie`, `linus`, `diana`), each with an Argon2id
-      `password_hash` and an IdP-level **group** (`engineering`, `finance-dept`, or
-      `hr-dept` — see `DESIGN.md` §5.8). No roles are seeded at the IdP at all anymore —
-      `UserRow` has no `roles` column; roles are entirely SP-local (next step).
-   6. `_seed_sp_pair()` for each of `sp-a`, `sp-b`: if that SP has no `SPClientKeyRow` in
-      its **own** DB yet, generates an Ed25519 keypair there (private half stays in that
-      SP's DB, never touches `idp.db`); either way, **upserts** the `ClientRow` in
-      `idp.db` with the SP's current public key + config-derived metadata
-      (`redirect_uri`, `post_logout_redirect_uri`, `backchannel_logout_uri`,
-      `display_name`) — this metadata refresh happens on every run, so a port/URL change
-      in config takes effect without wiping data. `key_revoked` and `authorized_groups`
-      are **not** touched on upsert (only set once, at first creation) — a previously
-      revoked SP key, or a group grant/revoke an admin made, both survive a reseed.
-   6b. `_seed_local_roles()`, right after, per SP: if that SP's `user_roles` table is
-      still empty, writes its seeded local role assignments (e.g. `grace → admin` at
-      SP-A but `grace → user` at SP-B — see `DESIGN.md` §5.8 on role decoupling).
-      Idempotent by checking for *any* existing row, so it never clobbers an HR-panel
-      edit made after the first boot.
-   7. Prints the bootstrap report (issuer, active kid, SP URLs, seeded users, the
-      one-time admin token) to stdout.
-4. **Ready.** IdP public UI at `http://127.0.0.1:9400`, IdP internal (`/token`,
-   `/admin/*`) at `http://127.0.0.1:9410`, SP-A at `:9401`, SP-B at `:9402`.
-
-**Verified live (2026-08-29):** fresh `rm -f data/*.db` → `seed_all()` → 4 uvicorn
-processes → `.well-known/openid-configuration` returns `200` and its `token_endpoint`
-correctly points at `http://127.0.0.1:9410/token` → `scripts/demo.py` passes both
-assertions (SSO, cross-SP audience rejection).
-
-## 1B. Containers (`container-start.sh` → `compose.yaml`)
+## Container startup (`container-start.sh` → `compose.yaml`)
 
 1. `./container-start.sh`:
    1. `command -v docker && docker info` — if both succeed, `ENGINE=docker`. Else if
@@ -94,10 +25,36 @@ assertions (SSO, cross-SP audience rejection).
       (`python -m fabric.seed`); each service overrides `command:`.
    2. **`provisioner`** starts first, mounting **all three** named volumes
       (`idp-data:/data/idp`, `spa-data:/data/spa`, `spb-data:/data/spb`) — the only
-      component that ever does. Runs `fabric.seed` (identical logic to §1A step 3, just
-      pointed at `/data/*` via `FABRIC_IDP_DB_FILE`/`FABRIC_SP_A_DB_FILE`/
-      `FABRIC_SP_B_DB_FILE`), prints the admin token to its own log, then **exits**.
-      `restart: "no"` — it never runs again on `up` unless the volumes are wiped.
+      component that ever does. Runs `fabric.seed.seed_all()`, pointed at `/data/*` via
+      `FABRIC_IDP_DB_FILE`/`FABRIC_SP_A_DB_FILE`/`FABRIC_SP_B_DB_FILE`:
+      1. `settings.data_dir.mkdir(...)` and opens (creating if absent) `idp.db`,
+         `sp_a.db`, `sp_b.db` via `create_all(engine, <Base>)`. **`create_all` only
+         creates tables that don't exist yet — it never alters an existing table's
+         columns** (see Finding 1 below).
+      2. `KeyService.ensure_active_key()` — if no `SigningKeyRow` has `status="active"`,
+         generates one Ed25519 keypair, stores both halves in `idp.db`.
+      3. `_seed_admin()` — if no admin-token hash exists yet, generates a random opaque
+         token, stores **only its Argon2 hash**, prints the plaintext once.
+      4. `_seed_users()` — if the `users` table is empty, inserts the 6 seeded
+         identities (`ada`, `grace`, `alan`, `marie`, `linus`, `diana`), each with an
+         Argon2id `password_hash` and an IdP-level **group** (`engineering`,
+         `finance-dept`, or `hr-dept` — see `DESIGN.md` §5.8). No roles are seeded at
+         the IdP — `UserRow` has no `roles` column; roles are entirely SP-local.
+      5. `_seed_sp_pair()` per SP: generates an Ed25519 keypair in that SP's **own** DB
+         if it doesn't have one yet (private half never touches `idp.db`); either way,
+         **upserts** the `ClientRow` in `idp.db` with the current public key and
+         config-derived metadata — refreshed every run, so a port/URL change takes
+         effect without wiping data. `key_revoked` and `authorized_groups` are **not**
+         touched on upsert (set once, at first creation), so a revoked key or a group
+         grant/revoke survives a reseed.
+      6. `_seed_local_roles()` per SP, right after: if that SP's `user_roles` table is
+         still empty, writes its seeded local role assignments (e.g. `grace → admin` at
+         SP-A but `grace → user` at SP-B — role decoupling, `DESIGN.md` §5.8).
+         Idempotent by checking for *any* existing row, so it never clobbers an
+         HR-panel edit made after the first boot.
+      7. Prints the bootstrap report (issuer, active kid, SP URLs, seeded users, the
+         one-time admin token) to its own log, then **exits**. `restart: "no"` — it
+         never runs again on `up` unless the volumes are wiped.
    3. `idp`, `idp-internal`, `sp-a`, `sp-b` each have
       `depends_on: provisioner: condition: service_completed_successfully` — they don't
       start until the provisioner has exited with code 0.
@@ -105,8 +62,9 @@ assertions (SSO, cross-SP audience rejection).
       (`9400:9400`, `9401:9401`, `9402:9402`). **`idp-internal` has no `ports:` entry at
       all** — reachable only from containers on the `spa-idp`/`spb-idp` networks (which
       `sp-a`, `sp-b`, and `idp`/`idp-internal` itself are all attached to), never from the
-      host or beyond. Every uvicorn command also carries `--forwarded-allow-ips ""`, same
-      reasoning as §1A.
+      host or beyond. Every uvicorn command also carries `--forwarded-allow-ips ""`
+      (disables uvicorn's own default trust of `X-Forwarded-For` from `127.0.0.1` — see
+      "Findings" below and `common/audit.py`).
    5. Network topology: `idp` and `idp-internal` are on **both** `spa-idp` and
       `spb-idp`. `sp-a` is only on `spa-idp`; `sp-b` is only on `spb-idp`. So `sp-a` can
       reach `idp`/`idp-internal` but has **no route at all** to `sp-b` (not even DNS
@@ -177,12 +135,14 @@ consequences, both confirmed live:
 > command unmodified — `docker compose exec sp-a python scripts/rotate_sp_key.py sp-a` —
 > which now works end-to-end (see Flow 5's updated write-up). As a bonus check,
 > `docker compose exec sp-a python scripts/demo.py` was also tried: its SSO check (part
-> 1) passes, but its cross-SP-integrity check (part 2) still can't complete from inside
+> 1) passed, but its cross-SP-integrity check (part 2) couldn't complete from inside
 > *either* SP's own container — `sp-a` has no network route to `sp-b` at all, by design
-> (§10.2), so no single container in this topology can reach both SPs and hold SP-A's
-> key at the same time. That's the isolation working correctly, not a remaining gap —
-> `demo.py` is a local-mode (§10.1) tool and was never meant to run inside the segmented
-> topology.
+> (§10.1), so no single container in this topology can reach both SPs and hold SP-A's
+> key at the same time. That's the isolation working correctly, not a bug in the script.
+>
+> **Update:** `run.py` and `scripts/demo.py` have since been removed from the project
+> entirely — this is now a container-only deployment, with no local-process run mode to
+> document or verify against.
 
 Neither finding blocked the deploy flow itself — both were routed around live to
 complete this verification pass — but both were real, and both are now fixed (see the
