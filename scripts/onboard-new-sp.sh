@@ -13,6 +13,9 @@
 #
 set -euo pipefail
 
+# Always run from the project root so podman compose can find compose.yaml
+cd "$(dirname "$0")/.."
+
 IDP="http://localhost:9410"
 CLIENT_ID="sp-c"
 DISPLAY_NAME="New App"
