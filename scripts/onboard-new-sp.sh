@@ -41,7 +41,14 @@ curl -s -X POST "$IDP/admin/clients" \
 
 echo
 echo "=== Step 2: Generate keypair for $CLIENT_ID (private key stays in the SP) ==="
-KEYPAIR=$(python3 scripts/gen_sp_key.py "$CLIENT_ID" 2>/dev/null)
+KEYPAIR=$(podman compose exec -T idp-internal python3 -c "
+import sys, json
+sys.path.insert(0, '/app/src')
+from fabric.common import crypto
+kid = crypto.new_kid()
+key = crypto.generate_signing_key(kid)
+print(json.dumps({'public_jwk': crypto.public_jwk(key), 'private_jwk': crypto.private_jwk(key)}))
+")
 PUBLIC_JWK=$(echo "$KEYPAIR" | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin)['public_jwk']))")
 
 echo "Public JWK (safe to share with IdP):"
