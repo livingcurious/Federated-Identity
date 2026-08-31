@@ -118,10 +118,6 @@ lifecycle and persistence.
   session only by `idp_sid`.
 
 **Cut, with the reason:**
-
-Two are real security gaps — the rest are forced by the localhost/demo constraint:
-
-**Real gaps:**
 - **TLS / mTLS** — the SP→IdP connection uses plain HTTP. `private_key_jwt` proves
   SP-A's identity to the IdP, but the IdP's side of mutual auth — proving itself to
   the SP — relies on JWKS being fetched over a trusted network path, not a certificate
@@ -132,21 +128,6 @@ Two are real security gaps — the rest are forced by the localhost/demo constra
   deploying an actual third SP container with its private key seeded into its own
   database is not wired up. The IdP side is complete; the SP-side container deployment
   is not. Demonstrating it requires pointing that out.
-
-**Forced by the demo constraint:**
-- **Rate limiting / login lockout** — not meaningful on localhost. Argon2id makes each
-  guess expensive; a real deployment adds a lockout layer on top.
-- **CSRF tokens** — `SameSite=Lax` is the only defense. It works here because `idp`,
-  `sp-a`, `sp-b` are distinct hostnames (a real cross-site boundary), but `GET /logout`
-  is unprotected and there's no server-side token as a second layer.
-- **Tamper-evident audit log** — events are persisted to SQLite, but the trail isn't
-  signed or hash-chained. Direct DB access could edit history undetected.
-- **User group mutation at runtime** — which groups a user belongs to is set at seed
-  time only. Granting or revoking a whole group's access to an SP is live; moving one
-  specific user to a different group requires a reseed.
-- **`/etc/hosts` manual setup** — forced by the distinct-hostname requirement that makes
-  `SameSite=Lax` a real cross-site boundary. Collapsing everything onto `localhost`
-  would quietly undo that cookie isolation.
 
 ---
 
