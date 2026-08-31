@@ -36,28 +36,33 @@ layer.
 ```mermaid
 graph TB
     Browser["Browser"]
+    Operator["Operator"]
 
     subgraph IdP
-        IdPPub["Public app :9400<br/>/authorize /login /logout<br/>/.well-known/*"]
-        IdPInt["Internal app :9410<br/>/token /admin/*"]
+        IdPPub["Public app :9400<br/>/authorize /login /logout<br/>/.well-known/openid-configuration<br/>/.well-known/jwks.json"]
+        IdPInt["Internal app :9410<br/>/token<br/>/admin/* (JSON API)<br/>/admin/login /admin/dashboard (UI)"]
         IdPDB[("idp.db")]
     end
 
     subgraph "SP-A"
-        SPA["SP-A :9401<br/>/login /callback /profile<br/>/admin /finance /hr"]
+        SPA["SP-A :9401<br/>/login /callback /profile /logout<br/>/backchannel-logout<br/>/admin /finance /hr"]
         SPADB[("sp_a.db")]
     end
 
     subgraph "SP-B"
-        SPB["SP-B :9402<br/>/login /callback /profile"]
+        SPB["SP-B :9402<br/>/login /callback /profile /logout<br/>/backchannel-logout"]
         SPBDB[("sp_b.db")]
     end
 
     Browser -->|login UI, SSO cookie| IdPPub
+    Browser -->|admin console| IdPInt
     Browser -->|session cookie| SPA
     Browser -->|session cookie| SPB
+    Operator -->|X-Admin-Token| IdPInt
     SPA -->|private_key_jwt, code exchange| IdPInt
     SPB -->|private_key_jwt, code exchange| IdPInt
+    IdPInt -.->|back-channel logout| SPA
+    IdPInt -.->|back-channel logout| SPB
     IdPPub --- IdPDB
     IdPInt --- IdPDB
     SPA --- SPADB

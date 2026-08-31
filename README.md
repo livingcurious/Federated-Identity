@@ -15,21 +15,57 @@ signing.
 
 **Requirements:** Docker or Podman.
 
+### Step 1 — Add hostnames to `/etc/hosts` (one-time, needs sudo)
+
+The browser and the tokens must agree on the same hostnames. Run this in your
+**Mac Terminal** (not the IDE terminal — needs an interactive password prompt):
+
+```bash
+echo '127.0.0.1  idp  sp-a  sp-b' | sudo tee -a /etc/hosts
+```
+
+This maps `idp`, `sp-a`, and `sp-b` to loopback so your browser can reach the
+containers by name. Required once per machine; survives reboots.
+
+### Step 2 — Start the stack
+
 ```bash
 cd identity-fabric
-./container-start.sh          # Docker if available, else installs and uses Podman
+./container-start.sh -d       # Docker if available, else installs and uses Podman
 ```
-Add `127.0.0.1 idp sp-a sp-b` to `/etc/hosts` first if prompted. Seeds the databases
-(prints seeded users + a one-time admin token) and launches four services:
+
+The `-d` flag runs detached (returns your terminal). Wait ~30 seconds, then verify:
+
+```bash
+podman compose ps   # or: docker compose ps
+```
+
+All four services should show `Up`.
+
+### Step 3 — Get the admin token
+
+```bash
+podman compose logs provisioner
+```
+
+The token is printed under `Admin token`. **Save it** — it is stored to
+`/data/idp/admin_token.txt` inside the IdP volume and shown on every boot.
+You can also retrieve it at any time with:
+
+```bash
+podman compose exec idp-internal cat /data/idp/admin_token.txt
+```
+
+### Services
 
 | Service | URL |
 |---|---|
-| IdP (public) | http://idp:9400 |
-| IdP (internal — `/token`, `/admin/*`) | http://idp-internal:9410 — no host-published port; reach it with `<engine> compose exec idp-internal ...` |
+| IdP (public — login, JWKS, authorize) | http://idp:9400 |
+| IdP (internal — `/token`, `/admin/*`, admin UI) | http://localhost:9410 |
 | SP-A · Atlas Console | http://sp-a:9401 |
 | SP-B · Borealis Portal | http://sp-b:9402 |
 
-Admin token is in `<engine> compose logs provisioner`.
+Admin console (browser): http://localhost:9410/admin/login — paste the token from Step 3.
 
 Seeded users (email / password / IdP group):
 
@@ -219,44 +255,84 @@ graph TB
 
 ---
 
-## AI Usage: Where it Helped and Where You Lacked
+## AI Usage: Where it Helped and Where it Fell Short
 
-Where it helped:
+**Where it helped:**
 
 - The session and audit-logging design — timeouts, SQLite persistence, structured logs
-  with a persisted trail — was solid from the start and never needed a correction.
-- Splitting the IdP into public and internal apps came from recognizing, unprompted,
-  that network segmentation between the two SPs never actually protected `/token` or
-  `/admin` — a credential-based check doesn't care where the request came from.
-- The SP-key revocation lever was proposed as part of that same containment discussion,
-  not asked for first.
-- The uvicorn proxy-header issue that would have quietly undone the audit-log fix was
-  caught by testing the fix live and seeing it fail, then tracing it to the actual
-  cause.
-- Choosing Ed25519 over RSA and ECDSA, and pinning the verifier to a single algorithm,
-  predates this round of work, but held up cleanly under direct questions about why.
+  with a persisted trail — was correct from the start and required no correction.
+- Splitting the IdP into two processes (public app and internal app) was an unprompted
+  decision, recognising that network segmentation between SPs never actually protected
+  `/token` or `/admin` — a credential check does not care where a request came from.
+- The SP-key revocation lever was proposed as part of that same containment design,
+  not added later.
+- The uvicorn proxy-header issue — where uvicorn's own `ProxyHeadersMiddleware` was
+  silently rewriting `request.client` before application code ran, undermining the
+  audit-log source-IP fix — was caught by testing the fix live, seeing it fail, and
+  tracing it to the actual transport-layer cause rather than patching the symptom.
+- Choosing Ed25519 and pinning the verifier to a hardcoded algorithm allowlist — closing
+  algorithm-confusion attacks including `alg: none` — was a correct, well-reasoned
+  choice that held up under scrutiny.
 
-Where It lacked:
+**Where it fell short:**
 
-- The biggest one: the original security review missed that any authenticated user
-  could SSO into any SP. It found the authorization-code race, the audit-log spoofing,
-  and the missing rate limiting, but not this — the most basic access-control question.
-  It only came up because you asked directly what happens if a user shouldn't be
-  allowed into an SP, and the honest answer at that point was that it would succeed.
-- The fix for that was first proposed as per-user grants. Group-based, Okta-style
-  assignment — the shape that actually scales — was your redirect.
-- Removing roles from the IdP entirely was your question, not a proactive suggestion.
-- The Okta-parity registration flow was something you asked for directly, after asking
-  how a real IdP onboards an app.
-- The CSRF gap was surfaced by your question in this conversation. It had been sitting
-  there, unaddressed, through every earlier round.
-- Database concurrency was never load-tested until you asked directly whether writes
-  were actually safe under concurrency, and whether the IdP's public and internal apps
-  sharing one SQLite file was a real problem rather than just a network-placement
-  detail. Both turned out to be real: a check-then-insert race in first-login role
-  creation (`UNIQUE constraint failed`), and — worse — a single-shared-connection fix
-  from an *earlier* round in this same project turned out to make concurrent access
-  worse, not better, once actually tested under load (the token endpoint failing to
-  find a code the public app had just issued, up to ~98% of the time at 60 concurrent
-  logins). Fixed with WAL mode plus a per-process write lock, verified with the same
-  concurrency test that found the bug, run repeatedly.
+- The original security review missed the most basic access-control question: any
+  authenticated user could SSO into any registered SP. It found the authorization-code
+  race, the audit-log spoofing gap, and the missing rate limiting — but not the absence
+  of SP-level access control entirely.
+- The first proposed fix for that gap was per-user grants — which does not scale. The
+  correct shape, group-based assignment (the model Okta and Azure AD use), was not the
+  initial proposal.
+- Roles were initially kept in the IdP. The correct design — moving them out entirely
+  into per-SP tables so each application owns its own permission vocabulary — was not a
+  proactive decision.
+- Dynamic client registration (the flow where a new SP is created in a pending state,
+  generates its own keypair, and submits only the public half) was not built initially.
+  It was added only after the question of how a real IdP onboards a new application
+  was raised.
+- The CSRF gap — `GET /logout` unprotected and no server-side token as a second layer
+  beyond `SameSite=Lax` — was present from the start and was not caught in any earlier
+  review pass.
+- Database concurrency was not load-tested. When it was, two real bugs appeared: a
+  check-then-insert race in first-login role creation (`UNIQUE constraint failed`), and
+  a single-shared-connection "fix" from an earlier round that made concurrent access
+  worse rather than better — the token endpoint failed to find a code the public app
+  had just written, in up to ~98% of requests at 60 concurrent logins. Fixed with WAL
+  mode and a per-process write lock, verified by re-running the same concurrency test
+  repeatedly.
+
+---
+
+## Demo vs. Reality — what was relaxed for this demo and why
+
+Two deliberate departures from the real security design were made to support live
+demonstration. Both are documented here so the gap is explicit, not accidental.
+
+### Port 9410 is published to the host
+
+**In this demo:** `compose.yaml` exposes `9410` on the host so the admin console
+(`http://localhost:9410/admin/login`) is reachable in a browser.
+
+**In reality:** the internal IdP surface (`/token`, `/admin/*`) has **no published
+port**. It is reachable only from inside the container network — i.e. from SP-A and
+SP-B over the compose network, or via `podman compose exec`. The reason is that
+`private_key_jwt` and the admin token are credential-based checks: they don't care
+where the request came from, only what it can prove. Publishing the port means a
+stolen SP key or admin token is exploitable from anywhere on the host network, not
+just from inside the segmented topology. Removing the `ports:` entry from the
+`idp-internal` service in `compose.yaml` restores the intended boundary.
+
+### Admin token is stored in plaintext
+
+**In this demo:** at first boot the admin token is written to
+`/data/idp/admin_token.txt` inside the IdP volume and printed on every subsequent
+boot so it is never lost between restarts.
+
+**In reality:** the admin token is **shown exactly once** — at first boot — and
+is never stored in recoverable form. Only its Argon2id hash is persisted in the
+database. If the token is lost, the only recovery is to wipe the database and
+reseed, which generates a new token. This is intentional: a token file on disk
+is a credential at rest, and its confidentiality depends entirely on filesystem
+permissions — weaker than keeping only the hash. For a production deployment,
+remove the `token_file.write_text(...)` line in `seed.py` and the corresponding
+read-back in `_seed_admin`, restoring the original show-once behaviour.
