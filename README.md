@@ -119,44 +119,34 @@ lifecycle and persistence.
 
 **Cut, with the reason:**
 
-- **TLS/HTTPS** — out of scope; everything runs on `localhost` over HTTP. The
-  IdP-proves-itself-to-SP half of mutual authentication depends on trusting the network
-  path a JWKS document was fetched over, not on a certificate chain.
-- **Rate limiting or lockout on login** — not built. Argon2id makes each password guess
-  expensive, but there's no lockout.
-- **Atomic single-use enforcement on the authorization code** — a race window under
-  concurrent requests could let the same code be redeemed twice.
-- **Replay tracking on back-channel logout tokens** — not built. Low impact since
-  revocation is idempotent.
-- **A live third SP process** to prove dynamic client registration end to end in one
-  run — the admin-API mechanics are demonstrated directly instead, without standing up
-  a third service.
-- **CSRF tokens** on session-authenticated POST endpoints — not built. `SameSite=Lax`
-  on every session cookie is the only defense. Since `idp`, `sp-a`, and `sp-b` are
-  distinct hostnames, it does block a real cross-site POST, but it has a gap: it
-  doesn't cover `GET /logout`, and there's no server-side token as a second layer.
-- **Tamper-evident audit logging** — not built. Every security-relevant action writes a
-  JSON log line and a persisted database row, but the trail itself isn't signed or
-  hash-chained, so write access to the database could edit history undetected.
-- **mTLS on the SP↔IdP connection, and HSM/KMS-backed signing** — both real options,
-  both out of this project's scope.
-- **An admin lever to change an individual user's group membership** — not built. Group
-  grant/revoke exists only at the client level (`authorize_group`/`revoke_group` on a
-  per-SP `authorized_groups` list); which groups a *user* belongs to is seed-only, fixed
-  at bootstrap, with no runtime mutator. Granting or revoking a whole group's access to
-  an SP is live and immediate for anyone already signed in; moving one specific person
-  into a different group is not possible without a reseed.
-- **A way to run this without a manual, root-privileged edit to the host's `/etc/hosts`**
-  — not built. The browser has to resolve `idp`/`sp-a`/`sp-b` to loopback, and
-  `container-start.sh` deliberately only checks for that and tells you the exact
-  command — it never edits the file itself, since that's a system-wide change outside
-  this project's own footprint, needing `sudo`. It's also not just inconvenience:
-  using distinct hostnames instead of `localhost` on three different ports is what
-  makes `SameSite=Lax` a real cross-site boundary here (see the CSRF row above) —
-  collapsing everything onto `localhost` to avoid the hosts-file edit would quietly
-  undo that. So the manual step is a direct consequence of a security choice, not an
-  arbitrary one, but it's still the one part of setup that reaches past this project's
-  own isolation and onto shared host state.
+Two are real security gaps — the rest are forced by the localhost/demo constraint:
+
+**Real gaps:**
+- **TLS / mTLS** — the SP→IdP connection uses plain HTTP. `private_key_jwt` proves
+  SP-A's identity to the IdP, but the IdP's side of mutual auth — proving itself to
+  the SP — relies on JWKS being fetched over a trusted network path, not a certificate
+  chain. In production this needs TLS on both legs and ideally mTLS on the SP→IdP
+  channel. Not out of scope — just not built.
+- **SP onboarding is not end-to-end** — the admin API mechanics for dynamic client
+  registration work (create pending client, submit public key, authorize group), but
+  deploying an actual third SP container with its private key seeded into its own
+  database is not wired up. The IdP side is complete; the SP-side container deployment
+  is not. Demonstrating it requires pointing that out.
+
+**Forced by the demo constraint:**
+- **Rate limiting / login lockout** — not meaningful on localhost. Argon2id makes each
+  guess expensive; a real deployment adds a lockout layer on top.
+- **CSRF tokens** — `SameSite=Lax` is the only defense. It works here because `idp`,
+  `sp-a`, `sp-b` are distinct hostnames (a real cross-site boundary), but `GET /logout`
+  is unprotected and there's no server-side token as a second layer.
+- **Tamper-evident audit log** — events are persisted to SQLite, but the trail isn't
+  signed or hash-chained. Direct DB access could edit history undetected.
+- **User group mutation at runtime** — which groups a user belongs to is set at seed
+  time only. Granting or revoking a whole group's access to an SP is live; moving one
+  specific user to a different group requires a reseed.
+- **`/etc/hosts` manual setup** — forced by the distinct-hostname requirement that makes
+  `SameSite=Lax` a real cross-site boundary. Collapsing everything onto `localhost`
+  would quietly undo that cookie isolation.
 
 ---
 
@@ -261,11 +251,6 @@ graph TB
 
 - The session and audit-logging design — timeouts, SQLite persistence, structured logs
   with a persisted trail — was correct from the start and required no correction.
-- Splitting the IdP into two processes (public app and internal app) was an unprompted
-  decision, recognising that network segmentation between SPs never actually protected
-  `/token` or `/admin` — a credential check does not care where a request came from.
-- The SP-key revocation lever was proposed as part of that same containment design,
-  not added later.
 - The uvicorn proxy-header issue — where uvicorn's own `ProxyHeadersMiddleware` was
   silently rewriting `request.client` before application code ran, undermining the
   audit-log source-IP fix — was caught by testing the fix live, seeing it fail, and
@@ -276,6 +261,14 @@ graph TB
 
 **Where it fell short:**
 
+- The IdP was originally a single process with `/token` and `/admin` published on the
+  same port as the login UI — meaning the internal surface was reachable from anywhere
+  the public surface was. The split into two separate processes (public app and internal
+  app) and placing the internal one on a network with no published host port was not a
+  proactive design decision. It was identified and corrected only after the gap was
+  pointed out.
+- The SP-key revocation lever followed from the same gap — an SP's private key had no
+  dedicated revocation path until the question of what happens when it leaks was raised.
 - The original security review missed the most basic access-control question: any
   authenticated user could SSO into any registered SP. It found the authorization-code
   race, the audit-log spoofing gap, and the missing rate limiting — but not the absence

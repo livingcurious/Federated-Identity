@@ -7,9 +7,9 @@
 #   Step 3 — Submit only the public key to the IdP (registration complete)
 #   Step 4 — Authorize a group so users can actually SSO in
 #
-# Run from the project root:
+# Run from anywhere in the project:
 #   export ADMIN=$(podman compose exec idp-internal cat /data/idp/admin_token.txt)
-#   bash docs/flows/onboard-new-sp.sh
+#   bash scripts/onboard-new-sp.sh
 #
 set -euo pipefail
 
